@@ -1,0 +1,1 @@
+Correção Pix: PIX_API_BASE agora usa window.location.origin corretamente e backend não cai em mock por padrão. Configure PIX_PROVIDER=mercadopago e MERCADOPAGO_ACCESS_TOKEN no Railway.

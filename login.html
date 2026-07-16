@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>evcore — Login</title>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root { --bg:#0a0e14; --surface:#111720; --surface2:#161d28; --border:#253348; --accent:#00e5a0; --text:#e2eaf4; --text2:#8fa3bc; --red:#ef4444; }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { min-height:100vh; display:grid; place-items:center; background:radial-gradient(circle at 20% 20%, rgba(0,229,160,.12), transparent 28%), var(--bg); color:var(--text); font-family:'DM Sans', sans-serif; padding:24px; }
+    .card { width:100%; max-width:420px; background:rgba(17,23,32,.96); border:1px solid var(--border); border-radius:20px; padding:34px; box-shadow:0 24px 80px rgba(0,0,0,.35); }
+    .brand { font-family:'Syne', sans-serif; font-weight:800; font-size:30px; letter-spacing:-.5px; color:var(--accent); margin-bottom:6px; }
+    .sub { color:var(--text2); font-size:14px; line-height:1.5; margin-bottom:28px; }
+    label { display:block; font-size:12px; font-weight:700; color:var(--text2); text-transform:uppercase; letter-spacing:.08em; margin:14px 0 7px; }
+    input { width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:13px 14px; color:var(--text); font-size:15px; outline:none; }
+    input:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(0,229,160,.12); }
+    button { width:100%; margin-top:22px; border:none; border-radius:12px; padding:13px 16px; background:var(--accent); color:#062016; font-weight:800; cursor:pointer; font-size:15px; }
+    button:disabled { opacity:.6; cursor:wait; }
+    .error { min-height:22px; color:var(--red); font-size:13px; margin-top:14px; }
+    .foot { margin-top:22px; color:var(--text2); font-size:12px; text-align:center; }
+  </style>
+</head>
+<body>
+  <form class="card" id="login-form">
+    <div class="brand">evcore</div>
+    <div class="sub">Acesso seguro ao painel de gestão da rede de eletropostos.</div>
+    <label for="username">Usuário</label>
+    <input id="username" name="username" autocomplete="username" required autofocus />
+    <label for="password">Senha</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required />
+    <button id="btn" type="submit">Entrar</button>
+    <div class="error" id="error"></div>
+    <div class="foot">EV Core · ambiente protegido</div>
+  </form>
+  <script>
+    document.getElementById('login-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const btn = document.getElementById('btn');
+      const error = document.getElementById('error');
+      btn.disabled = true;
+      error.textContent = '';
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Falha no login.');
+        window.location.href = '/';
+      } catch (err) {
+        error.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

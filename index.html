@@ -1,0 +1,1325 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>evcore - Rede: EV Parking</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0e14;
+    --surface: #111720;
+    --surface2: #161d28;
+    --surface3: #1c2535;
+    --border: #1e2d42;
+    --border2: #253348;
+    --accent: #00e5a0;
+    --accent2: #00b87c;
+    --accent-dim: rgba(0,229,160,0.12);
+    --accent-glow: rgba(0,229,160,0.25);
+    --blue: #3b82f6;
+    --blue-dim: rgba(59,130,246,0.12);
+    --yellow: #f59e0b;
+    --yellow-dim: rgba(245,158,11,0.12);
+    --red: #ef4444;
+    --red-dim: rgba(239,68,68,0.12);
+    --text: #e2eaf4;
+    --text2: #8fa3bc;
+    --text3: #4d6580;
+    --radius: 12px;
+    --radius-sm: 8px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* SIDEBAR */
+  .sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0;
+    width: 240px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    z-index: 100;
+    overflow: hidden;
+  }
+
+  .logo {
+    padding: 28px 24px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .logo-mark {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 22px;
+    color: var(--accent);
+    letter-spacing: -0.5px;
+  }
+  .logo-sub {
+    font-size: 10px;
+    color: var(--text3);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    font-family: 'DM Mono', monospace;
+    margin-top: 2px;
+  }
+
+  .nav { flex: 1; padding: 16px 12px; overflow-y: auto; overflow-x: hidden; }
+  .nav::-webkit-scrollbar { width: 4px; }
+  .nav::-webkit-scrollbar-track { background: transparent; }
+  .nav::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+  .nav-section { margin-bottom: 24px; }
+  .nav-label {
+    font-size: 9px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text3);
+    font-family: 'DM Mono', monospace;
+    padding: 0 12px;
+    margin-bottom: 8px;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    color: var(--text2);
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.15s;
+    margin-bottom: 2px;
+  }
+  .nav-item:hover { background: var(--surface3); color: var(--text); }
+  .nav-item.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border: 1px solid rgba(0,229,160,0.2);
+  }
+  .nav-item-disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+  .nav-item-disabled::after {
+    content: 'em breve';
+    font-size: 9px;
+    background: var(--surface3);
+    color: var(--text3);
+    border-radius: 4px;
+    padding: 1px 5px;
+    margin-left: auto;
+    letter-spacing: 0.03em;
+  }
+  .nav-icon { font-size: 16px; width: 20px; text-align: center; }
+
+  .sidebar-footer {
+    padding: 16px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .status-badge {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+    background: var(--accent-dim);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: var(--accent);
+  }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* MAIN */
+  .main {
+    margin-left: 240px;
+    min-height: 100vh;
+  }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(10,14,20,0.85);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 32px;
+    height: 60px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .page-title {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 18px;
+  }
+  .topbar-actions { display: flex; gap: 12px; align-items: center; }
+
+  .content { padding: 32px; }
+
+  /* SCREENS */
+  .screen { display: none; }
+  .screen.active { display: block; }
+
+  /* CARDS */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+  .card-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 20px;
+  }
+  .card-title {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 16px;
+  }
+
+  /* STATS GRID */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+  }
+  .stat-card.green::before { background: var(--accent); }
+  .stat-card.blue::before { background: var(--blue); }
+  .stat-card.yellow::before { background: var(--yellow); }
+  .stat-card.red::before { background: var(--red); }
+
+  .stat-icon { font-size: 24px; margin-bottom: 12px; }
+  .stat-value {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 28px;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .stat-label { font-size: 12px; color: var(--text2); }
+
+  /* BUTTONS */
+  .btn {
+    padding: 9px 18px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    display: inline-flex; align-items: center; gap: 7px;
+    transition: all 0.15s;
+    font-family: 'DM Sans', sans-serif;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: #0a1a14;
+  }
+  .btn-primary:hover { background: var(--accent2); transform: translateY(-1px); }
+  .btn-secondary {
+    background: var(--surface3);
+    color: var(--text);
+    border: 1px solid var(--border2);
+  }
+  .btn-secondary:hover { background: var(--border2); }
+  .btn-danger {
+    background: var(--red-dim);
+    color: var(--red);
+    border: 1px solid rgba(239,68,68,0.25);
+  }
+  .btn-danger:hover { background: rgba(239,68,68,0.2); }
+  .btn-sm { padding: 6px 12px; font-size: 12px; }
+  .btn-icon { padding: 8px; }
+
+  /* FORMS */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .form-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  .form-group { display: flex; flex-direction: column; gap: 6px; }
+  .form-group.full { grid-column: 1 / -1; }
+  label { font-size: 12px; font-weight: 600; color: var(--text2); letter-spacing: 0.5px; text-transform: uppercase; font-family: 'DM Mono', monospace; }
+
+  input, select, textarea {
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    color: var(--text);
+    font-size: 14px;
+    font-family: 'DM Sans', sans-serif;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+  }
+  select option { background: var(--surface2); }
+  textarea { resize: vertical; min-height: 80px; }
+
+  /* TABLE */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left;
+    padding: 10px 16px;
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text3);
+    font-family: 'DM Mono', monospace;
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 14px 16px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--surface2); }
+
+  /* BADGE */
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: 'DM Mono', monospace;
+  }
+  .badge-green { background: var(--accent-dim); color: var(--accent); }
+  .badge-blue { background: var(--blue-dim); color: var(--blue); }
+  .badge-yellow { background: var(--yellow-dim); color: var(--yellow); }
+  .badge-red { background: var(--red-dim); color: var(--red); }
+
+  /* MODAL */
+  .modal-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(4px);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 16px;
+    padding: 32px;
+    width: 90%;
+    max-width: 640px;
+    max-height: 90vh;
+    overflow-y: auto;
+    position: relative;
+    animation: modalIn 0.2s ease;
+  }
+  .modal-lg { max-width: 900px; }
+  @keyframes modalIn { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:none} }
+  .modal-title {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 20px;
+    margin-bottom: 24px;
+  }
+  .modal-close {
+    position: absolute; top: 20px; right: 20px;
+    background: var(--surface3);
+    border: none;
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    color: var(--text2);
+    font-size: 16px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-close:hover { background: var(--border2); color: var(--text); }
+  .modal-actions {
+    display: flex; justify-content: flex-end; gap: 10px;
+    margin-top: 28px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+  }
+
+  /* UPLOAD ZONE */
+  .upload-zone {
+    border: 2px dashed var(--border2);
+    border-radius: var(--radius);
+    padding: 48px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: var(--surface2);
+  }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: var(--accent-dim); }
+  .upload-icon { font-size: 40px; margin-bottom: 12px; }
+  .upload-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 18px; margin-bottom: 6px; }
+  .upload-sub { font-size: 13px; color: var(--text2); }
+
+  /* INVOICE PREVIEW */
+  .invoice-preview {
+    background: #fff;
+    color: #1a1a1a;
+    border-radius: var(--radius);
+    padding: 48px;
+    font-family: 'DM Sans', sans-serif;
+  }
+  .inv-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 32px; }
+  .inv-logo { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 24px; color: #00a870; }
+  .inv-number { font-size: 12px; color: #666; margin-top: 4px; }
+  .inv-title-right { text-align: right; }
+  .inv-badge { background: #e8f7f2; color: #00a870; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; display: inline-block; margin-bottom: 4px; }
+  .inv-amount-big { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 32px; color: #00a870; }
+  .inv-divider { border: none; border-top: 1px solid #e8e8e8; margin: 20px 0; }
+  .inv-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+  .inv-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #999; font-weight: 600; margin-bottom: 4px; }
+  .inv-value { font-size: 14px; font-weight: 500; color: #1a1a1a; }
+  .inv-table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  .inv-table th { background: #f5f5f5; padding: 8px 12px; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #666; font-weight: 600; text-align: left; }
+  .inv-table td { padding: 10px 12px; font-size: 12px; border-bottom: 1px solid #f0f0f0; }
+  .inv-totals { background: #f9f9f9; padding: 16px; border-radius: 8px; margin-bottom: 24px; }
+  .inv-total-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+  .inv-total-row.final { font-size: 16px; font-weight: 700; padding-top: 10px; margin-top: 6px; border-top: 1px solid #e0e0e0; color: #00a870; }
+  .inv-qr-section { display: flex; gap: 20px; align-items: center; background: #f0fbf6; border: 1px solid #c3eadb; border-radius: 8px; padding: 16px; }
+  .inv-qr-box { width: 80px; height: 80px; background: #fff; border: 2px dashed #00a870; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #999; text-align: center; flex-shrink: 0; }
+  .inv-pix-info { font-size: 12px; color: #333; }
+  .inv-pix-key { font-family: monospace; font-size: 13px; font-weight: 600; color: #00a870; background: #fff; padding: 4px 8px; border-radius: 4px; margin-top: 4px; display: inline-block; }
+
+  /* SEARCH */
+  .search-bar {
+    position: relative;
+    width: 280px;
+  }
+  .search-bar input {
+    padding-left: 36px;
+    width: 100%;
+  }
+  .search-icon {
+    position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+    color: var(--text3); font-size: 14px;
+  }
+
+  /* GRID 2 */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+
+  /* TOAST */
+  .toast-container {
+    position: fixed; bottom: 24px; right: 24px;
+    display: flex; flex-direction: column; gap: 8px;
+    z-index: 9999;
+  }
+  .toast {
+    padding: 12px 20px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 500;
+    display: flex; align-items: center; gap: 10px;
+    animation: toastIn 0.3s ease;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .toast-success { background: #0a2e1f; border: 1px solid var(--accent); color: var(--accent); }
+  .toast-error { background: #2e0a0a; border: 1px solid var(--red); color: var(--red); }
+  @keyframes toastIn { from{opacity:0;transform:translateX(20px)} to{opacity:1;transform:none} }
+
+  /* SECTION TITLE */
+  .section-title {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 26px;
+    margin-bottom: 6px;
+  }
+  .section-sub { font-size: 14px; color: var(--text2); margin-bottom: 28px; }
+
+  /* CHIPS */
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--surface3);
+    color: var(--text2);
+    border: 1px solid var(--border2);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .chip.active { background: var(--accent-dim); color: var(--accent); border-color: rgba(0,229,160,0.3); }
+
+  /* MONO */
+  .mono { font-family: 'DM Mono', monospace; }
+
+  /* EMPTY STATE */
+  .empty-state {
+    padding: 64px;
+    text-align: center;
+    color: var(--text3);
+  }
+  .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.4; }
+  .empty-title { font-size: 16px; color: var(--text2); font-weight: 600; margin-bottom: 4px; }
+  .empty-sub { font-size: 13px; }
+
+  /* PARSING RESULT */
+  .parse-result-item {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 14px 18px;
+    margin-bottom: 10px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .parse-key { font-size: 12px; color: var(--text3); font-family: 'DM Mono', monospace; }
+  .parse-value { font-size: 14px; font-weight: 500; color: var(--text); }
+
+  /* PROGRESS */
+  .progress-bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 8px; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.5s; }
+
+  /* AVATAR */
+  .avatar {
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .avatar-green { background: var(--accent-dim); color: var(--accent); }
+  .avatar-blue { background: var(--blue-dim); color: var(--blue); }
+
+  /* SPLIT */
+  .split { display: flex; gap: 24px; }
+  .split-main { flex: 1; min-width: 0; }
+  .split-side { width: 320px; flex-shrink: 0; }
+
+  /* PARSED CHARGES TABLE */
+  .charges-table-wrap { max-height: 240px; overflow-y: auto; }
+
+  /* CLIENT CARD */
+  .client-mini {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 16px;
+    display: flex; gap: 12px; align-items: center;
+    margin-bottom: 12px;
+  }
+  .client-mini-info { flex: 1; }
+  .client-mini-name { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+  .client-mini-detail { font-size: 12px; color: var(--text2); }
+
+  /* RESPONSIVE TAB */
+  .tab-bar {
+    display: flex; gap: 4px;
+    background: var(--surface2);
+    border-radius: var(--radius-sm);
+    padding: 4px;
+    margin-bottom: 24px;
+    width: fit-content;
+  }
+  .tab-item {
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text2);
+    transition: all 0.15s;
+  }
+  .tab-item.active {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  }
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<aside class="sidebar">
+  <div class="logo">
+    <div class="logo-mark">⚡ evcore</div>
+    <div class="logo-sub">Gestão de Eletropostos</div>
+  </div>
+  <nav class="nav">
+
+    <div class="nav-section">
+      <div class="nav-label">Visão Geral</div>
+      <div class="nav-item active" onclick="goTo('dashboard')">
+        <span class="nav-icon">📊</span> Dashboard Recargas
+      </div>
+      <div class="nav-item nav-item-disabled" title="Em breve">
+        <span class="nav-icon">💹</span> Dashboard Financeiro
+      </div>
+      <div class="nav-item" onclick="goTo('payback')">
+        <span class="nav-icon">📈</span> Payback
+      </div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Gestão</div>
+      <div class="nav-item" onclick="goTo('clientes')">
+        <span class="nav-icon">👥</span> Clientes
+      </div>
+      <div class="nav-item" onclick="goTo('parceiros')">
+        <span class="nav-icon">🤝</span> Parceiros
+      </div>
+      <div class="nav-item" onclick="goTo('estacoes')">
+        <span class="nav-icon">🔌</span> Estações
+      </div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Faturamento</div>
+      <div class="nav-item" onclick="goTo('importar')">
+        <span class="nav-icon">📥</span> Importar Tupi
+      </div>
+      <div class="nav-item" onclick="goTo('relatorios')">
+        <span class="nav-icon">📋</span> Relatórios de Recargas
+      </div>
+      <div class="nav-item" onclick="goTo('emitir')">
+        <span class="nav-icon">🕐</span> Recargas Pendentes
+      </div>
+      <div class="nav-item" onclick="goTo('faturas')">
+        <span class="nav-icon">📄</span> Faturas
+      </div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Finanças</div>
+      <div class="nav-item nav-item-disabled" title="Em breve">
+        <span class="nav-icon">📥</span> Contas a Receber
+      </div>
+      <div class="nav-item nav-item-disabled" title="Em breve">
+        <span class="nav-icon">📤</span> Contas a Pagar
+      </div>
+      <div class="nav-item nav-item-disabled" title="Em breve">
+        <span class="nav-icon">📈</span> Fluxo de Caixa
+      </div>
+      <div class="nav-item nav-item-disabled" title="Em breve">
+        <span class="nav-icon">🔄</span> Histórico de Repasses
+      </div>
+    </div>
+
+  </nav>
+  <div class="sidebar-footer">
+    <div class="status-badge" style="margin-bottom:8px">
+      <div class="status-dot"></div>
+      Sistema Online
+    </div>
+    <button class="btn btn-secondary" style="width:100%;font-size:12px;margin-bottom:8px" onclick="openConfigPix()">⚙️ Backend Pix</button>
+    <button class="btn btn-secondary" style="width:100%;font-size:12px;margin-bottom:8px" onclick="openConfigRede()">🏷️ Configurações da Rede</button>
+    <button class="btn btn-danger" style="width:100%;font-size:12px" onclick="logoutSistema()">🚪 Sair do sistema</button>
+  </div>
+</aside>
+
+<!-- MAIN -->
+<main class="main">
+  <div class="topbar">
+    <span class="page-title" id="page-title">Dashboard</span>
+    <div class="topbar-actions" id="topbar-actions"></div>
+  </div>
+  <div class="content">
+
+    <!-- DASHBOARD -->
+    <div class="screen active" id="screen-dashboard">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:26px">
+        <div>
+          <div class="section-title">Visão Geral</div>
+          <div class="section-sub" id="dashboard-subtitle">Período selecionado — Rede</div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px">
+          <label style="margin:0">Período</label>
+          <select id="dash-period-type" onchange="setDashboardPeriodo(this.value)" style="min-width:160px">
+            <option value="current_month">Mês atual</option>
+            <option value="last_30">Últimos 30 dias</option>
+            <option value="current_year">Ano atual</option>
+            <option value="all">Todo período</option>
+            <option value="custom">Personalizado</option>
+          </select>
+          <input type="date" id="dash-period-start" onchange="setDashboardPeriodoCustom()" style="width:145px;display:none">
+          <input type="date" id="dash-period-end" onchange="setDashboardPeriodoCustom()" style="width:145px;display:none">
+        </div>
+      </div>
+
+      <div class="stats-grid" style="grid-template-columns:repeat(5,1fr)">
+        <div class="stat-card green">
+          <div class="stat-icon">👥</div>
+          <div class="stat-value" id="stat-clientes-total">0</div>
+          <div class="stat-label">Clientes Totais</div>
+        </div>
+        <div class="stat-card blue">
+          <div class="stat-icon">🧾</div>
+          <div class="stat-value" id="stat-clientes-pos">0</div>
+          <div class="stat-label">Clientes Pós-pagos</div>
+        </div>
+        <div class="stat-card yellow">
+          <div class="stat-icon">⚡</div>
+          <div class="stat-value" id="stat-kwh-total">0</div>
+          <div class="stat-label">Energia Total</div>
+        </div>
+        <div class="stat-card green">
+          <div class="stat-icon">💰</div>
+          <div class="stat-value" id="stat-faturamento-bruto">R$0</div>
+          <div class="stat-label">Faturamento Bruto</div>
+        </div>
+        <div class="stat-card red">
+          <div class="stat-icon">📈</div>
+          <div class="stat-value" id="stat-lucro-rede">R$0</div>
+          <div class="stat-label">Lucro da Rede</div>
+        </div>
+      </div>
+
+      <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-top:8px">
+        <div class="stat-card yellow">
+          <div class="stat-icon">📂</div>
+          <div class="stat-value" id="stat-faturas-abertas">0</div>
+          <div class="stat-label">Faturas em Aberto</div>
+          <div id="stat-faturas-abertas-valor" style="margin-top:8px;font-size:13px;color:var(--text2)">R$0,00</div>
+        </div>
+        <div class="stat-card green">
+          <div class="stat-icon">✅</div>
+          <div class="stat-value" id="stat-faturas-pagas">0</div>
+          <div class="stat-label">Faturas Pagas</div>
+          <div id="stat-faturas-pagas-valor" style="margin-top:8px;font-size:13px;color:var(--text2)">R$0,00</div>
+        </div>
+        <div class="stat-card blue">
+          <div class="stat-icon">📄</div>
+          <div class="stat-value" id="stat-faturas-total">0</div>
+          <div class="stat-label">Total de Faturas Emitidas</div>
+          <div id="stat-faturas-total-valor" style="margin-top:8px;font-size:13px;color:var(--text2)">R$0,00</div>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top:24px">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Ranking de Clientes</span>
+            <span id="ranking-clientes-count" style="font-size:12px;color:var(--text2)"></span>
+          </div>
+          <div id="dash-ranking-clientes">
+            <div class="empty-state" style="padding:32px">
+              <div class="empty-icon">🏆</div>
+              <div class="empty-title">Nenhum consumo no período</div>
+              <div class="empty-sub">Importe relatórios para visualizar o ranking</div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Resumo do Período</span>
+            <button class="btn btn-secondary btn-sm" onclick="goTo('relatorios')">Ver Relatórios</button>
+          </div>
+          <div id="dash-resumo-periodo">
+            <div class="empty-state" style="padding:32px">
+              <div class="empty-icon">📊</div>
+              <div class="empty-title">Sem dados</div>
+              <div class="empty-sub">Os indicadores aparecem após importação de recargas</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CLIENTES -->
+    <div class="screen" id="screen-clientes">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px">
+        <div>
+          <div class="section-title">Clientes</div>
+          <div class="section-sub">Gerencie todos os clientes da rede</div>
+        </div>
+        <button class="btn btn-primary" onclick="openModalCliente()">＋ Novo Cliente</button>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="search-bar">
+            <span class="search-icon">🔍</span>
+            <input type="text" placeholder="Buscar clientes..." id="search-clientes" oninput="renderClientes()">
+          </div>
+          <span id="clientes-count" style="font-size:13px;color:var(--text2)"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th>RFID / Código</th>
+                <th>Placa</th>
+                <th>Tipo</th>
+                <th>Vencimento / Saldo</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="tabela-clientes"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- FATURAS -->
+    <div class="screen" id="screen-faturas">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px">
+        <div>
+          <div class="section-title">Faturas</div>
+          <div class="section-sub">Histórico de faturas emitidas</div>
+        </div>
+        <button class="btn btn-primary" onclick="goTo('emitir')">🕐 Recargas Pendentes</button>
+      </div>
+      <!-- Search + Filter bar -->
+      <div class="card" style="margin-bottom:16px;padding:16px 20px">
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <div class="search-bar" style="width:280px">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="search-faturas" placeholder="Buscar por nome, placa ou RFID..." oninput="renderFaturas()" style="width:100%">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <label style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;white-space:nowrap">De</label>
+            <input type="date" id="filtro-data-ini" onchange="renderFaturas()" style="width:150px">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <label style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;white-space:nowrap">Até</label>
+            <input type="date" id="filtro-data-fim" onchange="renderFaturas()" style="width:150px">
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="limparFiltrosFaturas()">✕ Limpar</button>
+          <span id="faturas-count" style="font-size:12px;color:var(--text2);margin-left:auto"></span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Fatura</th>
+                <th>Cliente</th>
+                <th>Competência</th>
+                <th>Vencimento</th>
+                <th>kWh</th>
+                <th>Valor</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="tabela-faturas"></tbody>
+          </table>
+        </div>
+        <div id="faturas-empty" class="empty-state">
+          <div class="empty-icon">📄</div>
+          <div class="empty-title">Nenhuma fatura emitida</div>
+          <div class="empty-sub">Importe o CSV da Tupi para gerar faturas</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RELATÓRIOS DE RECARGAS -->
+    <div class="screen" id="screen-relatorios">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px">
+        <div>
+          <div class="section-title">Relatórios de Recargas</div>
+          <div class="section-sub">Base completa separada por operação: pós-pago, recarga livre e avulso Tupi/Wemob</div>
+        </div>
+        <button class="btn btn-primary" onclick="goTo('importar')">📥 Importar Relatório</button>
+      </div>
+      <div class="card" style="margin-bottom:16px;padding:16px 20px">
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <div class="search-bar" style="width:340px">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="relatorio-search" placeholder="Buscar por cliente, e-mail, data ou estação..." oninput="renderRelatorios()" style="width:100%">
+          </div>
+          <input type="month" id="relatorio-mes" onchange="renderRelatorios()" style="width:auto" title="Filtrar por mês">
+          <select id="relatorio-equipamento" onchange="renderRelatorios()" style="min-width:200px">
+            <option value="">Todas as estações</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('relatorio-search').value='';document.getElementById('relatorio-equipamento').value='';document.getElementById('relatorio-mes').value='';renderRelatorios()">✕ Limpar</button>
+        </div>
+      </div>
+      <div id="relatorios-content">
+        <div class="empty-state">
+          <div class="empty-icon">📊</div>
+          <div class="empty-title">Nenhum relatório importado</div>
+          <div class="empty-sub">Importe o CSV da Tupi para criar a base de dados completa</div>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- PARCEIROS -->
+    <div class="screen" id="screen-parceiros">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;gap:16px;flex-wrap:wrap">
+        <div>
+          <div class="section-title">Parceiros</div>
+          <div class="section-sub">Cadastro dos locais parceiros e geração do relatório financeiro mensal oficial em PDF</div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <input type="month" id="parceiro-mes-fechamento" onchange="renderParceiros()" style="width:180px">
+          <button class="btn btn-primary" onclick="openModalParceiro()">＋ Novo Parceiro</button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:16px;padding:16px 20px">
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <div class="search-bar" style="width:340px">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="search-parceiros" placeholder="Buscar parceiro, documento ou estação..." oninput="renderParceiros()" style="width:100%">
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('search-parceiros').value='';renderParceiros()">✕ Limpar</button>
+          <span style="font-size:12px;color:var(--text2);margin-left:auto" id="parceiros-count"></span>
+        </div>
+      </div>
+      <div id="parceiros-dashboard" style="margin-bottom:16px"></div>
+      <div id="parceiros-content">
+        <div class="empty-state">
+          <div class="empty-icon">🤝</div>
+          <div class="empty-title">Nenhum parceiro cadastrado</div>
+          <div class="empty-sub">Cadastre o local onde a estação foi instalada e vincule os equipamentos</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- IMPORTAR CSV -->
+    <div class="screen" id="screen-importar">
+      <div class="section-title">Importar Relatório Tupi</div>
+      <div class="section-sub">Faça upload do arquivo CSV exportado pela plataforma Tupi</div>
+      <div class="split">
+        <div class="split-main">
+          <div class="card" style="margin-bottom:20px">
+            <div class="upload-zone" id="upload-zone" onclick="document.getElementById('csv-input').click()"
+              ondragover="event.preventDefault();this.classList.add('drag')"
+              ondragleave="this.classList.remove('drag')"
+              ondrop="handleDrop(event)">
+              <div class="upload-icon">📊</div>
+              <div class="upload-title">Arraste o CSV aqui</div>
+              <div class="upload-sub">ou clique para selecionar · Relatório mensal de transações Tupi</div>
+              <input type="file" id="csv-input" accept=".csv,.txt" style="display:none" onchange="handleFileSelect(this)">
+            </div>
+          </div>
+          <div id="parse-status" style="display:none">
+            <div class="card">
+              <div class="card-header">
+                <span class="card-title" id="parse-filename"></span>
+                <span class="badge badge-blue" id="parse-badge">Processando...</span>
+              </div>
+              <div class="progress-bar"><div class="progress-fill" id="parse-progress" style="width:0%"></div></div>
+              <div style="margin-top:20px" id="parse-content"></div>
+            </div>
+          </div>
+        </div>
+        <div class="split-side">
+          <div class="card">
+            <div class="card-title" style="margin-bottom:16px">📌 Formato Esperado</div>
+            <p style="font-size:13px;color:var(--text2);line-height:1.7;margin-bottom:16px">
+              Arquivo CSV exportado em <strong style="color:var(--text)">Transações por Lote</strong> na plataforma Tupi, com as colunas:
+            </p>
+            <div style="background:var(--surface2);border-radius:8px;padding:16px;font-size:11px;font-family:'DM Mono',monospace;line-height:2">
+              <span style="color:var(--text3)">ESTAÇÃO · NOME ESTAÇÃO</span><br>
+              <span style="color:var(--text2)">ID · DATA (início até fim)</span><br>
+              <span style="color:var(--text)">NOME · EMAIL</span><br>
+              <span style="color:var(--text3)">──────────────────</span><br>
+              <span style="color:var(--text2)">ENERGIA (kWh) · VALOR TOTAL</span><br>
+              <span style="color:var(--text2)">VALOR PAGO · DESCONTO · CUPOM</span><br>
+              <span style="color:var(--accent)">TAXA TUPI · VALOR A RECEBER</span>
+            </div>
+            <div style="margin-top:10px;padding:10px 12px;background:var(--accent-dim);border-radius:8px;font-size:12px;color:var(--accent)">
+              ✅ Compatível com exportação <strong>Tupi</strong> — Transações por Lote
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RECARGAS PENDENTES -->
+    <div class="screen" id="screen-emitir">
+      <div class="section-title">Recargas Pendentes</div>
+      <div class="section-sub">Recargas aguardando faturamento — vincule um cliente e emita a fatura Pix</div>
+
+      <!-- Filtros -->
+      <div class="card" style="margin-bottom:20px">
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <div class="search-bar" style="flex:1;min-width:200px">
+            <span class="search-icon">🔍</span>
+            <input type="text" placeholder="Buscar por cliente, e-mail, estação..." id="search-pendentes" oninput="renderPendentes()" style="width:100%">
+          </div>
+          <input type="month" id="mes-pendentes" style="width:auto" onchange="renderPendentes()">
+          <select id="filtro-tipo-pendente" onchange="renderPendentes()"
+            style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px 12px;font-size:13px">
+            <option value="">Todos os tipos</option>
+            <option value="pos_pago">Pós-pago</option>
+            <option value="avulso_app">Avulso Tupi</option>
+            <option value="recarga_livre">Recarga livre</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Resumo rápido -->
+      <div id="pendentes-resumo" style="margin-bottom:20px"></div>
+
+      <!-- Painel de emissão (aparece ao clicar em Emitir Fatura) -->
+      <div id="painel-emitir" style="display:none;margin-bottom:20px">
+        <div class="card" style="border:1px solid var(--accent)">
+          <div class="card-header">
+            <div>
+              <div class="card-title" id="painel-emitir-titulo">Emitir Fatura</div>
+              <div style="font-size:12px;color:var(--text2);margin-top:2px" id="painel-emitir-sub"></div>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="fecharPainelEmitir()">✕ Fechar</button>
+          </div>
+          <div id="painel-emitir-recargas" style="margin:12px 0"></div>
+          <div style="padding-top:14px;border-top:1px solid var(--border)">
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+              <span style="color:var(--text2);font-size:13px">Total kWh:</span>
+              <span id="total-kwh" class="mono" style="font-weight:600">0,000 kWh</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+              <span style="color:var(--text2);font-size:13px">Subtotal:</span>
+              <span id="subtotal-val" class="mono" style="font-weight:600">R$ 0,00</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+              <span style="color:var(--accent);font-size:13px">Desconto (<span id="desc-pct">0</span>%):</span>
+              <span id="desconto-val" class="mono" style="font-weight:600;color:var(--accent)">- R$ 0,00</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding-top:10px;border-top:1px solid var(--border)">
+              <span style="font-weight:700;font-size:16px">Total a Pagar:</span>
+              <span id="total-pagar" class="mono" style="font-weight:800;font-size:20px;color:var(--accent)">R$ 0,00</span>
+            </div>
+            <button class="btn btn-primary" style="width:100%;margin-top:16px;padding:14px" onclick="gerarFaturaFinal()">
+              ⚡ Gerar Fatura e Pix
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Grupos por cliente e sem vínculo -->
+      <div id="pendentes-grupos"></div>
+    </div>
+
+    <!-- ESTAÇÕES -->
+    <div class="screen" id="screen-estacoes">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;gap:16px;flex-wrap:wrap">
+        <div>
+          <div class="section-title">Estações</div>
+          <div class="section-sub">Cadastro das estações de recarga e vínculo com parceiros</div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <input type="month" id="estacoes-mes" onchange="renderEstacoes()" oninput="renderEstacoes()" style="width:auto">
+          <button class="btn btn-primary" onclick="openModalEstacao()">＋ Nova Estação</button>
+        </div>
+      </div>
+      <!-- Resumo geral -->
+      <div id="estacoes-resumo" style="margin-bottom:20px"></div>
+      <!-- Cards das estações -->
+      <div id="estacoes-content"></div>
+    </div>
+
+    <!-- PAYBACK -->
+    <div class="screen" id="screen-payback">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;gap:16px;flex-wrap:wrap">
+        <div>
+          <div class="section-title">Payback</div>
+          <div class="section-sub">Acompanhamento do retorno sobre o investimento por estação</div>
+        </div>
+      </div>
+      <div id="payback-content"></div>
+    </div>
+
+<!-- MODAL VINCULAR CLIENTE -->
+<div class="modal-overlay" id="modal-vincular-cliente">
+  <div class="modal" style="max-width:600px">
+    <button class="modal-close" onclick="closeModal('modal-vincular-cliente')">✕</button>
+    <div class="modal-title">🔗 Vincular Recarga a Cliente</div>
+    <div style="font-size:13px;color:var(--text2);margin-bottom:12px;line-height:1.6">
+      Selecione o cliente pós-pago responsável por esta recarga.<br>
+      Após vincular, a recarga ficará disponível para emissão de fatura Pix.
+    </div>
+    <div id="vincular-recarga-info"></div>
+    <div class="search-bar" style="width:100%;margin-bottom:14px">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="search-vincular" placeholder="Buscar por nome, e-mail, CPF/CNPJ..."
+        oninput="renderListaVincular()" style="width:100%">
+    </div>
+    <div id="vincular-lista-clientes" style="max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:8px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-vincular-cliente')">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+  </div><!-- /content -->
+</main>
+
+
+<!-- MODAL RECARGAS LIVRES -->
+<div class="modal-overlay" id="modal-recargas-livres">
+  <div class="modal" style="max-width:980px">
+    <button class="modal-close" onclick="closeModal('modal-recargas-livres')">✕</button>
+    <div class="modal-title">Incluir Recarga Livre na Fatura</div>
+    <div style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:14px">
+      Selecione uma ou mais recargas livres ainda não faturadas para vincular ao cliente selecionado. Elas entrarão na fatura como ajuste manual.
+    </div>
+    <div class="search-bar" style="width:100%;margin-bottom:14px">
+      <span class="search-icon">🔍</span>
+      <input type="text" placeholder="Buscar por data, equipamento ou valor..." id="search-recargas-livres" oninput="renderRecargasLivresModal()" style="width:100%">
+    </div>
+    <div id="recargas-livres-list"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-recargas-livres')">Cancelar</button>
+      <button class="btn btn-primary" onclick="confirmarRecargasLivresSelecionadas()">Incluir selecionadas</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL CLIENTE -->
+<div class="modal-overlay" id="modal-cliente">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-cliente')">✕</button>
+    <div class="modal-title" id="modal-cliente-title">Novo Cliente</div>
+    <div class="form-grid">
+      <div class="form-group full">
+        <label>Nome Completo / Razão Social *</label>
+        <input type="text" id="c-nome" placeholder="Ex: João Silva">
+      </div>
+      <div class="form-group">
+        <label>CPF / CNPJ *</label>
+        <input type="text" id="c-doc" placeholder="000.000.000-00">
+      </div>
+      <div class="form-group">
+        <label>E-mail *</label>
+        <input type="email" id="c-email" placeholder="cliente@email.com">
+      </div>
+      <div class="form-group">
+        <label>Telefone *</label>
+        <input type="text" id="c-telefone" placeholder="(11) 99999-9999">
+      </div>
+      <div class="form-group">
+        <label>Código RFID *</label>
+        <input type="text" id="c-rfid" placeholder="f7edb036" style="font-family:'DM Mono',monospace">
+      </div>
+      <div class="form-group">
+        <label>Placa do Veículo <span style="color:var(--text3);font-weight:400">(opcional)</span></label>
+        <input type="text" id="c-placa" placeholder="ABC-1D23" style="text-transform:uppercase">
+      </div>
+      <div class="form-group">
+        <label>Modelo do Veículo <span style="color:var(--text3);font-weight:400">(opcional)</span></label>
+        <input type="text" id="c-veiculo" placeholder="BYD Dolphin">
+      </div>
+      <div class="form-group">
+        <label>% de Desconto <span style="color:var(--text3);font-weight:400">(opcional)</span></label>
+        <input type="number" id="c-desconto" placeholder="0" min="0" max="100" value="0">
+      </div>
+      <div class="form-group">
+        <label>Dia de Vencimento <span style="color:var(--text3);font-weight:400">(opcional)</span></label>
+        <input type="number" id="c-vencimento" placeholder="10" min="1" max="28" value="10">
+      </div>
+      <div class="form-group">
+        <label>Tipo de Cobrança</label>
+        <select id="c-tipo">
+          <option value="avulso">Avulso Tupi/Wemob</option>
+          <option value="pos">Pós-pago</option>
+          <option value="pre">Pré-pago</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Saldo Pré-pago (R$)</label>
+        <input type="number" id="c-saldo" placeholder="0.00" min="0" step="0.01" value="0">
+      </div>
+      <div class="form-group">
+        <label>Chave PIX do Cliente <span style="color:var(--text3);font-weight:400">(para receber reembolsos)</span></label>
+        <input type="text" id="c-pix" placeholder="CPF, e-mail ou telefone do cliente">
+      </div>
+      <div class="form-group full">
+        <label>Endereço Completo</label>
+        <input type="text" id="c-endereco" placeholder="Rua, número, bairro, cidade - UF">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-cliente')">Cancelar</button>
+      <button class="btn btn-primary" onclick="salvarCliente()">💾 Salvar Cliente</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL FATURA PREVIEW -->
+<div class="modal-overlay" id="modal-fatura">
+  <div class="modal modal-lg">
+    <button class="modal-close" onclick="closeModal('modal-fatura')">✕</button>
+    <div class="modal-title">Pré-visualização da Fatura</div>
+    <div id="invoice-preview-content"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-fatura')">Fechar</button>
+      <button class="btn btn-primary" onclick="salvarFaturaGerada()">💾 Salvar Fatura</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- MODAL PARCEIRO -->
+<div class="modal-overlay" id="modal-parceiro">
+  <div class="modal modal-lg">
+    <button class="modal-close" onclick="closeModal('modal-parceiro')">✕</button>
+    <div class="modal-title" id="modal-parceiro-title">Novo Parceiro</div>
+    <div class="form-grid">
+      <div class="form-group full">
+        <label>Nome do Parceiro *</label>
+        <input type="text" id="p-nome" placeholder="Ex: M7 Mafra / Posto ABC">
+      </div>
+      <div class="form-group full">
+        <label>Endereço / Local</label>
+        <input type="text" id="p-endereco" placeholder="Av. Nereu Ramos, 1170 - Mafra/SC">
+      </div>
+      <div class="form-group">
+        <label>CPF / CNPJ *</label>
+        <input type="text" id="p-doc" placeholder="000.000.000-00 ou 00.000.000/0000-00">
+      </div>
+      <div class="form-group">
+        <label>Custo de Energia (R$/kWh) *</label>
+        <input type="number" id="p-custoEnergia" min="0" step="0.001" placeholder="0.800">
+      </div>
+      <div class="form-group">
+        <label>Mensalidade Integrador (R$)</label>
+        <input type="number" id="p-mensalidade" min="0" step="0.01" placeholder="0.00">
+      </div>
+      <div class="form-group">
+        <label>Comissão sobre Lucro Líquido (%)</label>
+        <input type="number" id="p-comissao" min="0" max="100" step="0.01" placeholder="0">
+      </div>
+      <div class="form-group">
+        <label>Taxas / Impostos / Gateway (%)</label>
+        <input type="number" id="p-taxaOperacional" min="0" max="100" step="0.01" placeholder="0">
+      </div>
+      <div class="form-group">
+        <label>Compromisso mínimo mensal (R$)
+          <span style="font-weight:400;color:var(--text3);font-size:11px;display:block;margin-top:2px">
+            Se a comissão não atingir este valor, garante o mínimo ao parceiro. Deixe 0 se não houver.
+          </span>
+        </label>
+        <input type="number" id="p-compromisoMinimo" min="0" step="0.01" placeholder="0.00" value="0">
+      </div>
+      <div class="form-group full">
+        <label>Estações / Equipamentos vinculados *</label>
+        <select id="p-equipamentos" multiple size="7" style="min-height:160px"></select>
+        <div style="font-size:12px;color:var(--text2);margin-top:6px">
+          Segure <strong>Ctrl</strong> (Windows/Linux) ou <strong>⌘ Command</strong> (Mac) para selecionar mais de uma estação.
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-parceiro')">Cancelar</button>
+      <button class="btn btn-primary" onclick="salvarParceiro()">💾 Salvar Parceiro</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL ESTAÇÃO -->
+<div class="modal-overlay" id="modal-estacao">
+  <div class="modal modal-lg">
+    <button class="modal-close" onclick="closeModal('modal-estacao')">✕</button>
+    <div class="modal-title" id="modal-estacao-title">Nova Estação</div>
+    <div class="form-grid">
+      <div class="form-group full">
+        <label>Nome canônico da estação *
+          <span style="font-weight:400;color:var(--text3);font-size:11px;display:block;margin-top:2px">
+            Exatamente como aparece no CSV da Tupi (ex: Lefel 40kW DC)
+          </span>
+        </label>
+        <input type="text" id="est-nome" placeholder="Ex: Lefel 40kW DC">
+      </div>
+      <div class="form-group">
+        <label>ID Tupi da estação
+          <span style="font-weight:400;color:var(--text3);font-size:11px;display:block;margin-top:2px">
+            Número da coluna ESTAÇÃO no CSV (ex: 1124387764)
+          </span>
+        </label>
+        <input type="text" id="est-idTupi" placeholder="1124387764" style="font-family:'DM Mono',monospace">
+      </div>
+      <div class="form-group">
+        <label>Parceiro vinculado</label>
+        <select id="est-parceiroId">
+          <option value="">— sem parceiro —</option>
+        </select>
+      </div>
+      <div class="form-group full">
+        <label>Endereço</label>
+        <input type="text" id="est-endereco" placeholder="Av. Argolo, 510 - Centro - São Bento do Sul/SC">
+      </div>
+      <div class="form-group">
+        <label>Potência (kW)</label>
+        <input type="number" id="est-potencia" min="0" step="1" placeholder="40">
+      </div>
+      <div class="form-group">
+        <label>Tipo de conector</label>
+        <input type="text" id="est-conector" placeholder="CCS2, CHAdeMO, Tipo 2...">
+      </div>
+      <div class="form-group full">
+        <label>Observações</label>
+        <input type="text" id="est-obs" placeholder="Informações adicionais sobre a estação">
+      </div>
+      <div class="form-group">
+        <label>Valor do investimento total (R$)
+          <span style="font-weight:400;color:var(--text3);font-size:11px;display:block;margin-top:2px">
+            Custo total de implantação da estação (equipamento + instalação + obras)
+          </span>
+        </label>
+        <input type="number" id="est-investimento" min="0" step="0.01" placeholder="200000.00">
+      </div>
+      <div class="form-group">
+        <label>Data de inauguração
+          <span style="font-weight:400;color:var(--text3);font-size:11px;display:block;margin-top:2px">
+            Início da operação — usada para o cálculo de payback.
+          </span>
+        </label>
+        <input type="date" id="est-dataInauguracao">
+      </div>
+      <div class="form-group full">
+        <label>Documentos da estação
+          <span style="font-weight:400;color:var(--text3);font-size:11px;display:block;margin-top:2px">
+            Contratos, laudos, manuais, fotos, etc. Arquivos salvos localmente no sistema.
+          </span>
+        </label>
+        <div style="border:2px dashed var(--border2);border-radius:10px;padding:16px;text-align:center;cursor:pointer;transition:border-color 0.2s"
+          onclick="document.getElementById('est-docs-input').click()"
+          ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
+          ondragleave="this.style.borderColor='var(--border2)'"
+          ondrop="event.preventDefault();this.style.borderColor='var(--border2)';handleEstacaoDocDrop(event)">
+          <div style="font-size:22px;margin-bottom:4px">📎</div>
+          <div style="font-size:13px;color:var(--text2)">Arraste arquivos ou clique para selecionar</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">PDF, imagens, Word, planilhas — máx. 5 MB por arquivo</div>
+          <input type="file" id="est-docs-input" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp,.txt" style="display:none" onchange="handleEstacaoDocSelect(this)">
+        </div>
+        <div id="est-docs-lista" style="margin-top:10px;display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-estacao')">Cancelar</button>
+      <button class="btn btn-primary" onclick="salvarEstacao()">💾 Salvar Estação</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="app.js"></script>
+
+</body>
+</html>

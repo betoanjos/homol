@@ -31,6 +31,7 @@ let clienteSelecionadoId = null;
 let faturaRascunho = null;
 let recargasLivresSelecionadasUIDs = [];
 let editingParceiroId = null;
+let parceiroFormId = null; // id usado para vincular arquivos, mesmo em cadastro novo
 let dashboardPeriodoTipo = localStorage.getItem('evcore_dashboard_periodo_tipo') || 'current_month';
 let dashboardPeriodoCustomStart = localStorage.getItem('evcore_dashboard_periodo_inicio') || '';
 let dashboardPeriodoCustomEnd = localStorage.getItem('evcore_dashboard_periodo_fim') || '';
@@ -2660,12 +2661,19 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
 
 function openModalParceiro(id = null) {
   editingParceiroId = id;
+  parceiroFormId = id || ('par_' + Date.now());
   const p = id ? parceiros.find(x => x.id === id) : null;
   document.getElementById('modal-parceiro-title').textContent = id ? 'Editar Parceiro' : 'Novo Parceiro';
   const set = (key, value) => { const el = document.getElementById('p-' + key); if (el) el.value = value ?? ''; };
   set('nome', p?.nome || '');
+  set('cep', p?.cep || '');
   set('endereco', p?.endereco || '');
+  set('contato', p?.contato || '');
+  set('telefone', p?.telefone || '');
   set('doc', p?.doc || '');
+  const fb = document.getElementById('p-doc-feedback'); if (fb) fb.textContent = '';
+  const fileInput = document.getElementById('p-arquivo-input'); if (fileInput) fileInput.value = '';
+  carregarArquivosParceiro(parceiroFormId);
   set('custoEnergia', p?.custoEnergia ?? '0.80');
   set('mensalidade', p?.mensalidade ?? '0');
   set('comissao', p?.comissao ?? '0');
@@ -2719,9 +2727,12 @@ function salvarParceiro() {
   if (!equipamentos.length) { toast('Selecione ao menos uma estação.', 'error'); return; }
 
   const obj = {
-    id:               editingParceiroId || 'par_' + Date.now(),
+    id:               editingParceiroId || parceiroFormId || 'par_' + Date.now(),
     nome:             get('nome'),
+    cep:              get('cep'),
     endereco:         get('endereco'),
+    contato:          get('contato'),
+    telefone:         get('telefone'),
     doc:              get('doc'),
     custoEnergia:     Number(get('custoEnergia') || 0),
     mensalidade:      Number(get('mensalidade') || 0),
@@ -2755,6 +2766,136 @@ function salvarParceiro() {
   saveState();
   closeModal('modal-parceiro');
   renderParceiros();
+}
+
+// ===== Máscaras e busca de CEP (formulário de parceiro) =====
+
+function mascaraCEP(el) {
+  let v = el.value.replace(/\D/g, '').slice(0, 8);
+  el.value = v.length > 5 ? `${v.slice(0, 5)}-${v.slice(5)}` : v;
+}
+
+function mascaraTelefone(el) {
+  let v = el.value.replace(/\D/g, '').slice(0, 11);
+  if (v.length > 10) el.value = `(${v.slice(0,2)}) ${v.slice(2,7)}-${v.slice(7)}`;
+  else if (v.length > 6) el.value = `(${v.slice(0,2)}) ${v.slice(2,6)}-${v.slice(6)}`;
+  else if (v.length > 2) el.value = `(${v.slice(0,2)}) ${v.slice(2)}`;
+  else el.value = v;
+}
+
+function mascaraDocumento(el) {
+  let v = el.value.replace(/\D/g, '').slice(0, 14);
+  if (v.length <= 11) {
+    el.value = v
+      .replace(/(\d{3})(\d)/, '$1.$2')
+      .replace(/(\d{3})(\d)/, '$1.$2')
+      .replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+  } else {
+    el.value = v
+      .replace(/(\d{2})(\d)/, '$1.$2')
+      .replace(/(\d{3})(\d)/, '$1.$2')
+      .replace(/(\d{3})(\d)/, '$1/$2')
+      .replace(/(\d{4})(\d{1,2})$/, '$1-$2');
+  }
+}
+
+function feedbackDocumento(el) {
+  const fb = document.getElementById('p-doc-feedback');
+  if (!fb) return;
+  const s = el.value.replace(/\D/g, '');
+  if (!s) { fb.textContent = ''; return; }
+  if (validarDocumento(el.value)) {
+    fb.textContent = '✓ Documento válido';
+    fb.style.color = 'var(--green, #22c55e)';
+  } else {
+    fb.textContent = '✗ CPF/CNPJ inválido — confira os dígitos';
+    fb.style.color = 'var(--red, #ef4444)';
+  }
+}
+
+async function buscarCEP() {
+  const el = document.getElementById('p-cep');
+  const cep = (el?.value || '').replace(/\D/g, '');
+  if (cep.length !== 8) { toast('Digite um CEP com 8 dígitos.', 'error'); return; }
+  try {
+    const res = await fetch(`https://viacep.com.br/ws/${cep}/json/`);
+    const d = await res.json();
+    if (d.erro) { toast('CEP não encontrado.', 'error'); return; }
+    const partes = [d.logradouro, d.bairro, (d.localidade && d.uf) ? `${d.localidade}/${d.uf}` : ''].filter(Boolean);
+    const enderecoEl = document.getElementById('p-endereco');
+    if (enderecoEl) enderecoEl.value = partes.join(' - ');
+    toast('Endereço preenchido pelo CEP. Complete o número e edite se precisar.', 'success');
+    enderecoEl?.focus();
+  } catch (err) {
+    console.error('Erro ao buscar CEP:', err);
+    toast('Não foi possível buscar o CEP agora.', 'error');
+  }
+}
+
+// ===== Arquivos do parceiro =====
+
+function _fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+async function enviarArquivosParceiro(input) {
+  if (!parceiroFormId) { toast('Abra o cadastro do parceiro antes de anexar.', 'error'); return; }
+  const arquivos = [...(input.files || [])];
+  if (!arquivos.length) return;
+  let enviados = 0;
+  for (const file of arquivos) {
+    if (file.size > 25 * 1024 * 1024) { toast(`"${file.name}" excede 25MB e foi ignorado.`, 'error'); continue; }
+    try {
+      const base64 = await _fileToBase64(file);
+      const res = await fetch('/api/parceiros/arquivos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parceiroId: parceiroFormId, nome: file.name, tipo: file.type, base64 })
+      });
+      if (res.ok) enviados++;
+      else toast(`Falha ao enviar "${file.name}".`, 'error');
+    } catch (err) {
+      console.error('Erro no upload:', err);
+      toast(`Erro ao enviar "${file.name}".`, 'error');
+    }
+  }
+  input.value = '';
+  await carregarArquivosParceiro(parceiroFormId);
+  if (enviados) toast(`${enviados} arquivo(s) anexado(s).`, 'success');
+}
+
+async function carregarArquivosParceiro(pid) {
+  const box = document.getElementById('p-arquivos-lista');
+  if (!box) return;
+  if (!pid) { box.innerHTML = ''; return; }
+  try {
+    const res = await fetch(`/api/parceiros/${encodeURIComponent(pid)}/arquivos`);
+    const arr = res.ok ? await res.json() : [];
+    if (!arr.length) { box.innerHTML = '<div style="color:var(--text3);font-size:12px">Nenhum arquivo anexado.</div>'; return; }
+    box.innerHTML = arr.map(a => `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 10px;background:var(--surface2);border-radius:6px;margin-bottom:4px;font-size:13px">
+        <a href="/api/parceiros/arquivos/${a.id}/download" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📎 ${escapeHtml(a.nome)} <span style="color:var(--text3)">(${(Number(a.tamanho || 0) / 1024).toFixed(0)} KB)</span></a>
+        <button type="button" class="btn btn-secondary" style="padding:2px 8px;flex:none" onclick="excluirArquivoParceiro(${a.id})">Excluir</button>
+      </div>`).join('');
+  } catch (err) {
+    box.innerHTML = '<div style="color:var(--red);font-size:12px">Erro ao listar arquivos.</div>';
+  }
+}
+
+async function excluirArquivoParceiro(id) {
+  if (!confirm('Excluir este arquivo definitivamente?')) return;
+  try {
+    const res = await fetch(`/api/parceiros/arquivos/${id}`, { method: 'DELETE' });
+    if (res.ok) { await carregarArquivosParceiro(parceiroFormId); toast('Arquivo excluído.', 'success'); }
+    else toast('Falha ao excluir.', 'error');
+  } catch (err) {
+    toast('Erro ao excluir arquivo.', 'error');
+  }
 }
 
 function deletarParceiro(id) {

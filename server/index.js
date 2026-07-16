@@ -14,7 +14,13 @@ import { fetchSessionUserData, tupiConfig } from './tupi.js';
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+// Parser JSON global (2mb). A rota de upload de arquivos usa parser próprio com
+// limite maior, então é excluída aqui para não ser barrada pelo limite de 2mb.
+const jsonPadrao = express.json({ limit: '2mb' });
+app.use((req, res, next) => {
+  if (req.path === '/api/parceiros/arquivos') return next();
+  return jsonPadrao(req, res, next);
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -217,9 +223,25 @@ async function initStateDB() {
   `);
 }
 
+async function initParceiroArquivosDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS parceiro_arquivos (
+      id SERIAL PRIMARY KEY,
+      parceiro_id TEXT NOT NULL,
+      nome TEXT NOT NULL,
+      tipo TEXT,
+      tamanho INTEGER,
+      dados BYTEA NOT NULL,
+      criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_parceiro_arquivos_pid ON parceiro_arquivos (parceiro_id);`);
+}
+
 await initStateDB();
 await initAuthDB();
 await initTupiDB();
+await initParceiroArquivosDB();
 
 app.get('/login', async (req, res) => {
   const user = await getSessionUser(req);
@@ -340,6 +362,67 @@ app.get('/api/tupi/sessions/:id/user-data', async (req, res) => {
     res.json({ session_id: req.params.id, user_data: userData });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// ===== Arquivos do parceiro (contratos, fotos de etiquetas, documentos) =====
+// Armazenados no Postgres (BYTEA) para sobreviver a redeploys do Railway.
+
+// Upload: recebe { parceiroId, nome, tipo, base64 }. Parser dedicado com limite maior.
+app.post('/api/parceiros/arquivos', express.json({ limit: '30mb' }), async (req, res) => {
+  try {
+    const { parceiroId, nome, tipo, base64 } = req.body || {};
+    if (!parceiroId || !nome || !base64) return res.status(400).json({ error: 'Dados incompletos.' });
+    const buffer = Buffer.from(String(base64), 'base64');
+    if (!buffer.length) return res.status(400).json({ error: 'Arquivo vazio.' });
+    if (buffer.length > 25 * 1024 * 1024) return res.status(413).json({ error: 'Arquivo excede 25MB.' });
+    const r = await pool.query(
+      `INSERT INTO parceiro_arquivos (parceiro_id, nome, tipo, tamanho, dados)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, nome, tipo, tamanho, criado_em`,
+      [String(parceiroId), String(nome).slice(0, 300), tipo || null, buffer.length, buffer]
+    );
+    res.json({ ok: true, arquivo: r.rows[0] });
+  } catch (err) {
+    console.error('Erro no upload de arquivo do parceiro:', err);
+    res.status(500).json({ error: 'Erro ao salvar arquivo.' });
+  }
+});
+
+// Lista os arquivos de um parceiro (só metadados, sem os dados binários).
+app.get('/api/parceiros/:parceiroId/arquivos', async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, nome, tipo, tamanho, criado_em
+         FROM parceiro_arquivos WHERE parceiro_id = $1 ORDER BY criado_em DESC`,
+      [req.params.parceiroId]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao listar arquivos.' });
+  }
+});
+
+// Baixa/visualiza um arquivo.
+app.get('/api/parceiros/arquivos/:id/download', async (req, res) => {
+  try {
+    const r = await pool.query('SELECT nome, tipo, dados FROM parceiro_arquivos WHERE id = $1', [req.params.id]);
+    const arq = r.rows[0];
+    if (!arq) return res.status(404).json({ error: 'Arquivo não encontrado.' });
+    res.setHeader('Content-Type', arq.tipo || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(arq.nome)}"`);
+    res.send(arq.dados);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao baixar arquivo.' });
+  }
+});
+
+// Exclui um arquivo.
+app.delete('/api/parceiros/arquivos/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM parceiro_arquivos WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao excluir arquivo.' });
   }
 });
 

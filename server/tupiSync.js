@@ -197,7 +197,8 @@ export async function syncTupi({ motivo = 'manual', full = false } = {}) {
         `SELECT s.id, s.country_code
            FROM tupi_sessions s
            LEFT JOIN tupi_session_users u ON u.session_id = s.id
-          WHERE u.session_id IS NULL OR u.found = FALSE
+          WHERE s.kwh > 0                       -- só recargas reais têm usuário; evita 500 em sessões falhas
+            AND (u.session_id IS NULL OR u.found = FALSE)
           ORDER BY s.start_date_time DESC
           LIMIT $1`,
         [USERDATA_MAX_PER_RUN]

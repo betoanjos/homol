@@ -1233,13 +1233,30 @@
         <label>Nome do Parceiro *</label>
         <input type="text" id="p-nome" placeholder="Ex: M7 Mafra / Posto ABC">
       </div>
+      <div class="form-group">
+        <label>CEP</label>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="p-cep" placeholder="00000-000" maxlength="9" oninput="mascaraCEP(this)" onkeydown="if(event.key==='Enter'){event.preventDefault();buscarCEP();}" style="flex:1">
+          <button type="button" class="btn btn-secondary" style="white-space:nowrap" onclick="buscarCEP()">🔍 Buscar</button>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">Digite o CEP e clique em Buscar. O endereço é preenchido e pode ser editado.</div>
+      </div>
+      <div class="form-group">
+        <label>CPF / CNPJ *</label>
+        <input type="text" id="p-doc" placeholder="000.000.000-00 ou 00.000.000/0000-00" oninput="mascaraDocumento(this)" onblur="feedbackDocumento(this)">
+        <div id="p-doc-feedback" style="font-size:11px;margin-top:4px"></div>
+      </div>
       <div class="form-group full">
         <label>Endereço / Local</label>
         <input type="text" id="p-endereco" placeholder="Av. Nereu Ramos, 1170 - Mafra/SC">
       </div>
       <div class="form-group">
-        <label>CPF / CNPJ *</label>
-        <input type="text" id="p-doc" placeholder="000.000.000-00 ou 00.000.000/0000-00">
+        <label>Contato no local (responsável)</label>
+        <input type="text" id="p-contato" placeholder="Ex: João da Silva">
+      </div>
+      <div class="form-group">
+        <label>Telefone do contato</label>
+        <input type="text" id="p-telefone" placeholder="(00) 00000-0000" maxlength="15" oninput="mascaraTelefone(this)">
       </div>
       <div class="form-group">
         <label>Custo de Energia (R$/kWh) *</label>
@@ -1271,6 +1288,12 @@
         <div style="font-size:12px;color:var(--text2);margin-top:6px">
           Segure <strong>Ctrl</strong> (Windows/Linux) ou <strong>⌘ Command</strong> (Mac) para selecionar mais de uma estação.
         </div>
+      </div>
+      <div class="form-group full">
+        <label>Arquivos do parceiro (contrato, fotos de etiquetas, documentos)</label>
+        <input type="file" id="p-arquivo-input" multiple onchange="enviarArquivosParceiro(this)">
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">PDF, imagens ou documentos até 25MB cada. Ficam guardados no servidor para consulta futura.</div>
+        <div id="p-arquivos-lista" style="margin-top:8px"></div>
       </div>
     </div>
     <div class="modal-actions">

@@ -644,6 +644,7 @@ function goTo(page) {
     faturas:          'Faturas',
     'contas-receber': 'Contas a Receber',
     'fluxo-caixa':    'Fluxo de Caixa',
+    'config-fin':     'Configurações Financeiras',
   };
   document.getElementById('page-title').textContent = titles[page] || page;
 
@@ -667,6 +668,7 @@ function goTo(page) {
   if (page === 'payback')    renderPayback();
   if (page === 'contas-receber') renderContasReceber();
   if (page === 'fluxo-caixa') renderFluxoCaixa();
+  if (page === 'config-fin') renderConfigFin();
   if (page === 'emitir') {
     const mesPend = document.getElementById('mes-pendentes');
     if (mesPend && !mesPend.value) mesPend.value = getMesAtualKey();
@@ -3069,11 +3071,12 @@ function _dataRef(c) {
 }
 
 // ---- Fluxo de Caixa: lançamento automático ----
-function lancarCaixa({ data, valor, descricao, tipo = 'entrada', categoria = 'Outros', origemTipo, origemId }) {
+function lancarCaixa({ data, valor, descricao, tipo = 'entrada', categoria = 'Outros', forma = '', conta = '', nDoc = '', origemTipo, origemId }) {
   if (!Array.isArray(fluxoCaixa)) fluxoCaixa = [];
   fluxoCaixa.push({
     id: 'cx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-    data, tipo, categoria, valor: Number(valor || 0), descricao: descricao || '',
+    data, tipo, categoria, forma, conta, nDoc,
+    valor: Number(valor || 0), descricao: descricao || '',
     origemTipo: origemTipo || 'manual', origemId: origemId || null,
     criadoEm: new Date().toISOString(),
   });
@@ -3093,6 +3096,8 @@ function abrirBaixa(id) {
     : (c.descricao || 'Recebível manual');
   document.getElementById('baixa-data').value = _dataRef(c) || _hojeISO();
   document.getElementById('baixa-valor').value = _valorParaCampo(_valorEfetivo(c));
+  document.getElementById('baixa-forma').innerHTML = _opcoesFormas(c.forma || '');
+  document.getElementById('baixa-conta').innerHTML = _opcoesContas(c.conta || '');
   document.getElementById('modal-baixa').classList.add('open');
 }
 function confirmarBaixa() {
@@ -3101,15 +3106,20 @@ function confirmarBaixa() {
   if (!c) return;
   const data = document.getElementById('baixa-data').value;
   const valor = parseMoeda(document.getElementById('baixa-valor').value);
+  const forma = document.getElementById('baixa-forma').value || '';
+  const conta = document.getElementById('baixa-conta').value || '';
   if (!data) { toast('Informe a data do recebimento.', 'error'); return; }
   if (!(valor > 0)) { toast('Informe um valor válido.', 'error'); return; }
   c.status = 'baixado';
   c.dataBaixa = data;
   c.valorBaixa = valor;
+  c.forma = forma;
+  c.conta = conta;
   removerCaixaPorOrigem(c.id); // evita duplicar se rebaixar
   lancarCaixa({
     data, valor, tipo: 'entrada',
     categoria: c.categoria || (c.tipo === 'tupi' ? 'Repasse Tupi' : 'Receitas'),
+    forma, conta, nDoc: c.nDoc || '',
     descricao: c.tipo === 'tupi' ? `Repasse Tupi ${_fmtDataBR(c.semanaInicio)}–${_fmtDataBR(c.semanaFim)}` : (c.descricao || 'Recebimento'),
     origemTipo: 'conta_receber', origemId: c.id,
   });
@@ -3146,8 +3156,11 @@ function toggleExpandirSemana(id) {
 // ---- Recebimento manual ----
 function abrirRecebimentoManual() {
   document.getElementById('rm-descricao').value = '';
-  document.getElementById('rm-categoria').innerHTML = _opcoesCategorias('Receitas');
+  document.getElementById('rm-categoria').innerHTML = _opcoesCategorias('', ['Receitas', 'Aportes']);
+  document.getElementById('rm-forma').innerHTML = _opcoesFormas('');
+  document.getElementById('rm-conta').innerHTML = _opcoesContas('');
   document.getElementById('rm-referente').value = '';
+  document.getElementById('rm-ndoc').value = '';
   document.getElementById('rm-valor').value = '';
   document.getElementById('rm-data').value = _hojeISO();
   document.getElementById('rm-parcelas').value = '1';
@@ -3156,6 +3169,9 @@ function abrirRecebimentoManual() {
 function salvarRecebimentoManual() {
   const descricao = document.getElementById('rm-descricao').value.trim();
   const categoria = document.getElementById('rm-categoria').value || 'Receitas';
+  const forma = document.getElementById('rm-forma').value || '';
+  const conta = document.getElementById('rm-conta').value || '';
+  const nDoc = document.getElementById('rm-ndoc').value.trim();
   const referente = document.getElementById('rm-referente').value.trim();
   const valorTotal = parseMoeda(document.getElementById('rm-valor').value);
   const data = document.getElementById('rm-data').value;
@@ -3175,7 +3191,7 @@ function salvarRecebimentoManual() {
     recebiveisManuais.push({
       id: 'man_' + Date.now() + '_' + i,
       tipo: 'manual',
-      categoria,
+      categoria, forma, conta, nDoc,
       descricao: parcelas > 1 ? `${descricao} (${i + 1}/${parcelas})` : descricao,
       referente,
       valorPrevisto: v,
@@ -3196,14 +3212,49 @@ function _hojeISO() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+function _catDe(c) {
+  return c.tipo === 'tupi' ? 'Repasse Tupi' : (c.categoria || '');
+}
+function _popularFiltroSelect(id, valores) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const atual = el.value;
+  el.innerHTML = '<option value="">Todas</option>' + (valores || []).map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+  if ([...el.options].some(o => o.value === atual)) el.value = atual;
+}
+
 function renderContasReceber() {
   gerarContasReceber();
   const cont = document.getElementById('cr-content');
   if (!cont) return;
 
+  const cfg = _getConfigFin();
+  _popularFiltroSelect('cr-filtro-categoria', cfg.categorias.map(c => c.nome));
+  _popularFiltroSelect('cr-filtro-forma', cfg.formasPagamento);
+  _popularFiltroSelect('cr-filtro-conta', cfg.contas);
+
   const filtroMes = document.getElementById('cr-mes')?.value || '';
+  const fStatus = document.getElementById('cr-filtro-status')?.value || 'todas';
+  const fCat = document.getElementById('cr-filtro-categoria')?.value || '';
+  const fForma = document.getElementById('cr-filtro-forma')?.value || '';
+  const fConta = document.getElementById('cr-filtro-conta')?.value || '';
+  const hoje = _hojeISO();
+
   let itens = _todosRecebiveis();
   if (filtroMes) itens = itens.filter(c => (_dataRef(c) || '').slice(0, 7) === filtroMes);
+  itens = itens.filter(c => {
+    if (fStatus === 'ocultas') { if (!c.oculto) return false; }
+    else {
+      if (c.oculto) return false; // ocultas só aparecem no filtro "Ocultas"
+      if (fStatus === 'aberto' && c.status === 'baixado') return false;
+      if (fStatus === 'atrasadas' && !(c.status !== 'baixado' && (c.dataPrevista || '') < hoje)) return false;
+      if (fStatus === 'recebidas' && c.status !== 'baixado') return false;
+    }
+    if (fCat && _catDe(c) !== fCat) return false;
+    if (fForma && (c.forma || '') !== fForma) return false;
+    if (fConta && (c.conta || '') !== fConta) return false;
+    return true;
+  });
   itens.sort((a, b) => ((_dataRef(a) || '') < (_dataRef(b) || '') ? 1 : -1));
 
   // Totais — ocultos ficam fora de qualquer somatória
@@ -3289,7 +3340,10 @@ function renderContasReceber() {
 
 function abrirLancamentoCaixa() {
   document.getElementById('cx-tipo').value = 'entrada';
-  document.getElementById('cx-categoria').innerHTML = _opcoesCategorias('Despesas');
+  document.getElementById('cx-categoria').innerHTML = _opcoesCategorias('');
+  document.getElementById('cx-forma').innerHTML = _opcoesFormas('');
+  document.getElementById('cx-conta').innerHTML = _opcoesContas('');
+  document.getElementById('cx-ndoc').value = '';
   document.getElementById('cx-descricao').value = '';
   document.getElementById('cx-valor').value = '';
   document.getElementById('cx-data').value = _hojeISO();
@@ -3298,13 +3352,16 @@ function abrirLancamentoCaixa() {
 function salvarLancamentoCaixa() {
   const tipo = document.getElementById('cx-tipo').value;
   const categoria = document.getElementById('cx-categoria').value || 'Outros';
+  const forma = document.getElementById('cx-forma').value || '';
+  const conta = document.getElementById('cx-conta').value || '';
+  const nDoc = document.getElementById('cx-ndoc').value.trim();
   const descricao = document.getElementById('cx-descricao').value.trim();
   const valor = parseMoeda(document.getElementById('cx-valor').value);
   const data = document.getElementById('cx-data').value;
   if (!descricao) { toast('Informe a descrição.', 'error'); return; }
   if (!(valor > 0)) { toast('Informe um valor válido.', 'error'); return; }
   if (!data) { toast('Informe a data.', 'error'); return; }
-  lancarCaixa({ data, valor, tipo, categoria, descricao, origemTipo: 'manual', origemId: null });
+  lancarCaixa({ data, valor, tipo, categoria, forma, conta, nDoc, descricao, origemTipo: 'manual', origemId: null });
   saveState();
   closeModal('modal-caixa-manual');
   renderFluxoCaixa();
@@ -3375,6 +3432,105 @@ function renderFluxoCaixa() {
         <tbody>${linhas}</tbody>
       </table>
     </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CONFIGURAÇÕES FINANCEIRAS (categorias, formas de pagamento, contas)
+// ═══════════════════════════════════════════════════════════
+
+function renderConfigFin() {
+  const cont = document.getElementById('cfgfin-content');
+  if (!cont) return;
+  const cfg = _getConfigFin();
+
+  const chip = (texto, onRemove) => `
+    <span style="display:inline-flex;align-items:center;gap:6px;background:var(--surface2);border-radius:16px;padding:4px 10px;margin:0 6px 6px 0;font-size:13px">
+      ${escapeHtml(texto)}
+      <button onclick="${onRemove}" title="Remover" style="border:none;background:none;color:var(--text3);cursor:pointer;font-size:14px;line-height:1">✕</button>
+    </span>`;
+
+  const grupos = GRUPOS_FIN.map(g => {
+    const cats = cfg.categorias.filter(c => c.grupo === g);
+    return `
+      <div class="card" style="padding:16px;margin-bottom:12px">
+        <div style="font-weight:700;margin-bottom:10px">${g}</div>
+        <div style="margin-bottom:10px">${cats.length ? cats.map(c => chip(c.nome, `removerCategoriaFin('${encodeURIComponent(c.nome)}')`)).join('') : '<span style="color:var(--text3);font-size:12px">Nenhuma categoria</span>'}</div>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="cfg-cat-${g}" placeholder="Nova categoria de ${g.toLowerCase()}" style="flex:1" onkeydown="if(event.key==='Enter')adicionarCategoriaFin('${g}')">
+          <button class="btn btn-secondary btn-sm" onclick="adicionarCategoriaFin('${g}')">＋ Adicionar</button>
+        </div>
+      </div>`;
+  }).join('');
+
+  const listaSimples = (titulo, arr, addFn, remFn, inputId) => `
+    <div class="card" style="padding:16px;margin-bottom:12px">
+      <div style="font-weight:700;margin-bottom:10px">${titulo}</div>
+      <div style="margin-bottom:10px">${(arr || []).length ? arr.map(x => chip(x, `${remFn}('${encodeURIComponent(x)}')`)).join('') : '<span style="color:var(--text3);font-size:12px">Nenhum item</span>'}</div>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="${inputId}" placeholder="Novo item" style="flex:1" onkeydown="if(event.key==='Enter')${addFn}()">
+        <button class="btn btn-secondary btn-sm" onclick="${addFn}()">＋ Adicionar</button>
+      </div>
+    </div>`;
+
+  cont.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;align-items:start">
+      <div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:8px;font-weight:600">Categorias</div>
+        ${grupos}
+      </div>
+      <div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:8px;font-weight:600">Formas de pagamento e contas</div>
+        ${listaSimples('Formas de pagamento', cfg.formasPagamento, 'adicionarFormaFin', 'removerFormaFin', 'cfg-forma-input')}
+        ${listaSimples('Contas financeiras', cfg.contas, 'adicionarContaFin', 'removerContaFin', 'cfg-conta-input')}
+      </div>
+    </div>`;
+}
+
+function adicionarCategoriaFin(grupo) {
+  const el = document.getElementById('cfg-cat-' + grupo);
+  const nome = (el?.value || '').trim();
+  if (!nome) return;
+  const cfg = _getConfigFin();
+  if (cfg.categorias.some(c => c.nome.toLowerCase() === nome.toLowerCase())) { toast('Categoria já existe.', 'error'); return; }
+  cfg.categorias.push({ nome, grupo });
+  saveState(); renderConfigFin();
+}
+function removerCategoriaFin(nomeEnc) {
+  const nome = decodeURIComponent(nomeEnc);
+  if (!confirm(`Remover a categoria "${nome}"?`)) return;
+  const cfg = _getConfigFin();
+  cfg.categorias = cfg.categorias.filter(c => c.nome !== nome);
+  saveState(); renderConfigFin();
+}
+function adicionarFormaFin() {
+  const el = document.getElementById('cfg-forma-input');
+  const v = (el?.value || '').trim();
+  if (!v) return;
+  const cfg = _getConfigFin();
+  if (cfg.formasPagamento.some(x => x.toLowerCase() === v.toLowerCase())) { toast('Forma já existe.', 'error'); return; }
+  cfg.formasPagamento.push(v);
+  saveState(); renderConfigFin();
+}
+function removerFormaFin(vEnc) {
+  const v = decodeURIComponent(vEnc);
+  const cfg = _getConfigFin();
+  cfg.formasPagamento = cfg.formasPagamento.filter(x => x !== v);
+  saveState(); renderConfigFin();
+}
+function adicionarContaFin() {
+  const el = document.getElementById('cfg-conta-input');
+  const v = (el?.value || '').trim();
+  if (!v) return;
+  const cfg = _getConfigFin();
+  if (cfg.contas.some(x => x.toLowerCase() === v.toLowerCase())) { toast('Conta já existe.', 'error'); return; }
+  cfg.contas.push(v);
+  saveState(); renderConfigFin();
+}
+function removerContaFin(vEnc) {
+  const v = decodeURIComponent(vEnc);
+  const cfg = _getConfigFin();
+  cfg.contas = cfg.contas.filter(x => x !== v);
+  saveState(); renderConfigFin();
 }
 
 function deletarParceiro(id) {

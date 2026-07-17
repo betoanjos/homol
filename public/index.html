@@ -619,7 +619,7 @@
       <div class="nav-item nav-item-disabled" title="Offline por enquanto">
         <span class="nav-icon">📊</span> DRE
       </div>
-      <div class="nav-item nav-item-disabled" title="Em breve">
+      <div class="nav-item" onclick="goTo('fluxo-caixa')">
         <span class="nav-icon">📈</span> Fluxo de Caixa
       </div>
       <div class="nav-item nav-item-disabled" title="Em breve">
@@ -922,10 +922,12 @@
           <div class="section-title">Contas a Receber</div>
           <div class="section-sub">Recebíveis da Tupi por semana (seg–dom) × estação. Pagamento previsto: domingo da semana + 30 dias.</div>
         </div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
           <label style="font-size:12px;color:var(--text2)">Mês do pagamento
             <input type="month" id="cr-mes" onchange="renderContasReceber()" style="width:170px;display:block;margin-top:2px">
           </label>
+          <button class="btn btn-secondary" onclick="document.getElementById('cr-mes').value='';renderContasReceber()">Limpar</button>
+          <button class="btn btn-primary" onclick="abrirRecebimentoManual()">＋ Recebimento manual</button>
         </div>
       </div>
       <div style="font-size:12px;color:var(--text3);margin-bottom:16px">
@@ -933,6 +935,25 @@
       </div>
       <div id="cr-dashboard" style="margin-bottom:16px"></div>
       <div id="cr-content"></div>
+    </div>
+
+    <!-- FLUXO DE CAIXA -->
+    <div class="screen" id="screen-fluxo-caixa">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;gap:16px;flex-wrap:wrap">
+        <div>
+          <div class="section-title">Fluxo de Caixa</div>
+          <div class="section-sub">Entradas e saídas. As baixas do Contas a Receber entram aqui automaticamente.</div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <label style="font-size:12px;color:var(--text2)">Mês
+            <input type="month" id="cx-mes" onchange="renderFluxoCaixa()" style="width:170px;display:block;margin-top:2px">
+          </label>
+          <button class="btn btn-secondary" onclick="document.getElementById('cx-mes').value='';renderFluxoCaixa()">Limpar</button>
+          <button class="btn btn-primary" onclick="abrirLancamentoCaixa()">＋ Novo lançamento</button>
+        </div>
+      </div>
+      <div id="cx-dashboard" style="margin-bottom:16px"></div>
+      <div id="cx-content"></div>
     </div>
 
     <!-- IMPORTAR CSV -->
@@ -1244,6 +1265,94 @@
 
 
 <!-- MODAL PARCEIRO -->
+<!-- BAIXAR RECEBIMENTO -->
+<div class="modal-overlay" id="modal-baixa">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-baixa')">✕</button>
+    <div class="modal-title">Baixar recebimento</div>
+    <input type="hidden" id="baixa-id">
+    <div style="font-size:13px;color:var(--text2);margin-bottom:14px" id="baixa-titulo"></div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Data do recebimento</label>
+        <input type="date" id="baixa-data">
+      </div>
+      <div class="form-group">
+        <label>Valor recebido (R$)</label>
+        <input type="number" id="baixa-valor" step="0.01" min="0">
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin-top:6px">A data vem preenchida com a previsão; edite para conciliar com o depósito real. Ao confirmar, lança automaticamente no Fluxo de Caixa.</div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-baixa')">Cancelar</button>
+      <button class="btn btn-primary" onclick="confirmarBaixa()">✓ Confirmar baixa</button>
+    </div>
+  </div>
+</div>
+
+<!-- LANÇAMENTO MANUAL DE CAIXA -->
+<div class="modal-overlay" id="modal-caixa-manual">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-caixa-manual')">✕</button>
+    <div class="modal-title">Novo lançamento no caixa</div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Tipo *</label>
+        <select id="cx-tipo">
+          <option value="entrada">Entrada (+)</option>
+          <option value="saida">Saída (−)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Data *</label>
+        <input type="date" id="cx-data">
+      </div>
+      <div class="form-group full">
+        <label>Descrição *</label>
+        <input type="text" id="cx-descricao" placeholder="Ex: Pagamento de energia, taxa, aporte...">
+      </div>
+      <div class="form-group">
+        <label>Valor (R$) *</label>
+        <input type="number" id="cx-valor" step="0.01" min="0" placeholder="0,00">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-caixa-manual')">Cancelar</button>
+      <button class="btn btn-primary" onclick="salvarLancamentoCaixa()">💾 Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- RECEBIMENTO MANUAL -->
+<div class="modal-overlay" id="modal-recebivel-manual">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-recebivel-manual')">✕</button>
+    <div class="modal-title">Novo recebimento manual</div>
+    <div class="form-grid">
+      <div class="form-group full">
+        <label>Descrição *</label>
+        <input type="text" id="rm-descricao" placeholder="Ex: Reembolso, aluguel, venda avulsa...">
+      </div>
+      <div class="form-group">
+        <label>Referente a (opcional)</label>
+        <input type="text" id="rm-referente" placeholder="Ex: Cliente João / Contrato X">
+      </div>
+      <div class="form-group">
+        <label>Valor (R$) *</label>
+        <input type="number" id="rm-valor" step="0.01" min="0" placeholder="0,00">
+      </div>
+      <div class="form-group">
+        <label>Data prevista de recebimento *</label>
+        <input type="date" id="rm-data">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-recebivel-manual')">Cancelar</button>
+      <button class="btn btn-primary" onclick="salvarRecebimentoManual()">💾 Salvar</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-parceiro">
   <div class="modal modal-lg">
     <button class="modal-close" onclick="closeModal('modal-parceiro')">✕</button>

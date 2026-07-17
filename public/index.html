@@ -1279,7 +1279,7 @@
       </div>
       <div class="form-group">
         <label>Valor recebido (R$)</label>
-        <input type="number" id="baixa-valor" step="0.01" min="0">
+        <input type="text" id="baixa-valor" inputmode="numeric" oninput="mascaraMoeda(this)">
       </div>
     </div>
     <div style="font-size:11px;color:var(--text3);margin-top:6px">A data vem preenchida com a previsão; edite para conciliar com o depósito real. Ao confirmar, lança automaticamente no Fluxo de Caixa.</div>
@@ -1304,16 +1304,20 @@
         </select>
       </div>
       <div class="form-group">
+        <label>Categoria *</label>
+        <select id="cx-categoria"></select>
+      </div>
+      <div class="form-group">
         <label>Data *</label>
         <input type="date" id="cx-data">
+      </div>
+      <div class="form-group">
+        <label>Valor (R$) *</label>
+        <input type="text" id="cx-valor" inputmode="numeric" placeholder="0,00" oninput="mascaraMoeda(this)">
       </div>
       <div class="form-group full">
         <label>Descrição *</label>
         <input type="text" id="cx-descricao" placeholder="Ex: Pagamento de energia, taxa, aporte...">
-      </div>
-      <div class="form-group">
-        <label>Valor (R$) *</label>
-        <input type="number" id="cx-valor" step="0.01" min="0" placeholder="0,00">
       </div>
     </div>
     <div class="modal-actions">
@@ -1334,16 +1338,25 @@
         <input type="text" id="rm-descricao" placeholder="Ex: Reembolso, aluguel, venda avulsa...">
       </div>
       <div class="form-group">
+        <label>Categoria *</label>
+        <select id="rm-categoria"></select>
+      </div>
+      <div class="form-group">
         <label>Referente a (opcional)</label>
         <input type="text" id="rm-referente" placeholder="Ex: Cliente João / Contrato X">
       </div>
       <div class="form-group">
-        <label>Valor (R$) *</label>
-        <input type="number" id="rm-valor" step="0.01" min="0" placeholder="0,00">
+        <label>Valor total (R$) *</label>
+        <input type="text" id="rm-valor" inputmode="numeric" placeholder="0,00" oninput="mascaraMoeda(this)">
       </div>
       <div class="form-group">
-        <label>Data prevista de recebimento *</label>
+        <label>Data prevista (1ª parcela) *</label>
         <input type="date" id="rm-data">
+      </div>
+      <div class="form-group">
+        <label>Parcelas</label>
+        <input type="number" id="rm-parcelas" min="1" max="360" step="1" value="1">
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">Se maior que 1, cria uma cobrança por mês com o valor dividido.</div>
       </div>
     </div>
     <div class="modal-actions">

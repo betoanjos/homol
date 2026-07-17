@@ -1406,16 +1406,18 @@ async function parseTupiCSV(csvText, filename) {
           }
         });
 
+      try { gerarContasReceber(); } catch (e) { console.warn('gerarContasReceber:', e.message); }
       saveState();
       if (clientesNovos > 0) toast(clientesNovos + ' cliente(s) Avulso Tupi cadastrado(s) automaticamente.', 'success');
     }
 
     document.getElementById('parse-progress').style.width = '100%';
-    document.getElementById('parse-badge').textContent = `${novasUnicas.length} novas / ${duplicadas.length} duplicadas`;
-    document.getElementById('parse-badge').className = novasUnicas.length ? 'badge badge-green' : 'badge badge-yellow';
+    document.getElementById('parse-badge').textContent = `${novasUnicas.length} novas / ${confirmadas} confirmadas`;
+    document.getElementById('parse-badge').className = (novasUnicas.length || confirmadas) ? 'badge badge-green' : 'badge badge-yellow';
     renderParseResult(novasUnicas.length ? novasUnicas : novas, periodo);
     renderRelatorios?.();
-    toast(`${novasUnicas.length} recargas novas importadas. ${duplicadas.length} duplicada(s) ignorada(s).`, novasUnicas.length ? 'success' : 'error');
+    if (typeof renderContasReceber === 'function' && document.getElementById('screen-contas-receber')?.classList.contains('active')) renderContasReceber();
+    toast(`${novasUnicas.length} nova(s) e ${confirmadas} confirmada(s) pelo relatório oficial da Tupi.`, 'success');
   } else {
     document.getElementById('parse-progress').style.width = '100%';
     document.getElementById('parse-badge').textContent = 'Sem dados';
@@ -2941,9 +2943,43 @@ async function excluirArquivoParceiro(id) {
 function fmtBRL(v) {
   return 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
 }
+
+// Categorias financeiras (contas a receber / fluxo de caixa)
+const CATEGORIAS_FIN = ['Receitas', 'Vendas', 'Repasse Tupi', 'Despesas', 'Energia', 'Publicidade', 'Manutenção', 'Serviços', 'Fornecedores', 'Impostos', 'Aporte', 'Outros'];
+function _opcoesCategorias(selecionada) {
+  return CATEGORIAS_FIN.map(c => `<option value="${c}"${c === selecionada ? ' selected' : ''}>${c}</option>`).join('');
+}
+
+// Moeda BR: parse robusto ("1.234,56" / "1234,56" / "50" -> número) e máscara de digitação.
+function parseMoeda(v) {
+  if (typeof v === 'number') return v;
+  let s = String(v || '').trim().replace(/[^\d.,-]/g, '');
+  if (!s) return 0;
+  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+function mascaraMoeda(el) {
+  let v = el.value.replace(/\D/g, '');
+  if (!v) { el.value = ''; return; }
+  v = (parseInt(v, 10) / 100).toFixed(2);
+  el.value = v.replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+function _valorParaCampo(n) {
+  // formata número para o campo mascarado (sem "R$")
+  return Number(n || 0).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
 function _dataParaObj(s) {
-  // aceita "YYYY-MM-DD HH:MM", "YYYY-MM-DD" ou ISO
-  const d = new Date(String(s || '').replace(' ', 'T'));
+  // aceita "YYYY-MM-DD HH:MM" (ISO), "DD/MM/YYYY HH:MM" (BR) ou ISO completo
+  const str = String(s || '').trim();
+  if (!str) return null;
+  const mBR = str.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:[ T](\d{2}):(\d{2}))?/);
+  if (mBR) {
+    const d = new Date(Number(mBR[3]), Number(mBR[2]) - 1, Number(mBR[1]), Number(mBR[4] || 0), Number(mBR[5] || 0));
+    return isNaN(d) ? null : d;
+  }
+  const d = new Date(str.replace(' ', 'T'));
   return isNaN(d) ? null : d;
 }
 function _fmtDataISO(d) {
@@ -3033,11 +3069,11 @@ function _dataRef(c) {
 }
 
 // ---- Fluxo de Caixa: lançamento automático ----
-function lancarCaixa({ data, valor, descricao, tipo = 'entrada', origemTipo, origemId }) {
+function lancarCaixa({ data, valor, descricao, tipo = 'entrada', categoria = 'Outros', origemTipo, origemId }) {
   if (!Array.isArray(fluxoCaixa)) fluxoCaixa = [];
   fluxoCaixa.push({
     id: 'cx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-    data, tipo, valor: Number(valor || 0), descricao: descricao || '',
+    data, tipo, categoria, valor: Number(valor || 0), descricao: descricao || '',
     origemTipo: origemTipo || 'manual', origemId: origemId || null,
     criadoEm: new Date().toISOString(),
   });
@@ -3056,7 +3092,7 @@ function abrirBaixa(id) {
     ? `Semana ${_fmtDataBR(c.semanaInicio)} – ${_fmtDataBR(c.semanaFim)}`
     : (c.descricao || 'Recebível manual');
   document.getElementById('baixa-data').value = _dataRef(c) || _hojeISO();
-  document.getElementById('baixa-valor').value = Number(_valorEfetivo(c)).toFixed(2);
+  document.getElementById('baixa-valor').value = _valorParaCampo(_valorEfetivo(c));
   document.getElementById('modal-baixa').classList.add('open');
 }
 function confirmarBaixa() {
@@ -3064,14 +3100,16 @@ function confirmarBaixa() {
   const c = _acharRecebivel(id);
   if (!c) return;
   const data = document.getElementById('baixa-data').value;
-  const valor = Number(document.getElementById('baixa-valor').value || 0);
+  const valor = parseMoeda(document.getElementById('baixa-valor').value);
   if (!data) { toast('Informe a data do recebimento.', 'error'); return; }
+  if (!(valor > 0)) { toast('Informe um valor válido.', 'error'); return; }
   c.status = 'baixado';
   c.dataBaixa = data;
   c.valorBaixa = valor;
   removerCaixaPorOrigem(c.id); // evita duplicar se rebaixar
   lancarCaixa({
     data, valor, tipo: 'entrada',
+    categoria: c.categoria || (c.tipo === 'tupi' ? 'Repasse Tupi' : 'Receitas'),
     descricao: c.tipo === 'tupi' ? `Repasse Tupi ${_fmtDataBR(c.semanaInicio)}–${_fmtDataBR(c.semanaFim)}` : (c.descricao || 'Recebimento'),
     origemTipo: 'conta_receber', origemId: c.id,
   });
@@ -3084,9 +3122,10 @@ function desfazerBaixa(id) {
   const c = _acharRecebivel(id);
   if (!c) return;
   removerCaixaPorOrigem(c.id);
+  c.status = 'previsto'; // precisa zerar ANTES de regenerar (senão a regeneração preserva 'baixado')
   c.dataBaixa = null;
   c.valorBaixa = null;
-  if (c.tipo === 'tupi') { gerarContasReceber(); } else { c.status = 'previsto'; }
+  if (c.tipo === 'tupi') gerarContasReceber();
   saveState();
   renderContasReceber();
   toast('Baixa desfeita.', 'success');
@@ -3094,6 +3133,7 @@ function desfazerBaixa(id) {
 function toggleOcultarConta(id) {
   const c = _acharRecebivel(id);
   if (!c) return;
+  if (c.status === 'baixado') { toast('Recebimento já baixado. Desfaça a baixa antes de ocultar.', 'error'); return; }
   c.oculto = !c.oculto;
   saveState();
   renderContasReceber();
@@ -3106,33 +3146,49 @@ function toggleExpandirSemana(id) {
 // ---- Recebimento manual ----
 function abrirRecebimentoManual() {
   document.getElementById('rm-descricao').value = '';
+  document.getElementById('rm-categoria').innerHTML = _opcoesCategorias('Receitas');
   document.getElementById('rm-referente').value = '';
   document.getElementById('rm-valor').value = '';
   document.getElementById('rm-data').value = _hojeISO();
+  document.getElementById('rm-parcelas').value = '1';
   document.getElementById('modal-recebivel-manual').classList.add('open');
 }
 function salvarRecebimentoManual() {
   const descricao = document.getElementById('rm-descricao').value.trim();
+  const categoria = document.getElementById('rm-categoria').value || 'Receitas';
   const referente = document.getElementById('rm-referente').value.trim();
-  const valor = Number(document.getElementById('rm-valor').value || 0);
+  const valorTotal = parseMoeda(document.getElementById('rm-valor').value);
   const data = document.getElementById('rm-data').value;
+  const parcelas = Math.max(1, Math.min(360, parseInt(document.getElementById('rm-parcelas').value || '1', 10)));
   if (!descricao) { toast('Informe a descrição.', 'error'); return; }
-  if (!(valor > 0)) { toast('Informe um valor válido.', 'error'); return; }
+  if (!(valorTotal > 0)) { toast('Informe um valor válido.', 'error'); return; }
   if (!data) { toast('Informe a data prevista.', 'error'); return; }
-  recebiveisManuais.push({
-    id: 'man_' + Date.now(),
-    tipo: 'manual',
-    descricao, referente,
-    valorPrevisto: valor,
-    dataPrevista: data,
-    status: 'previsto',
-    dataBaixa: null, valorBaixa: null, oculto: false,
-    criadoEm: new Date().toISOString(),
-  });
+
+  const base = _dataParaObj(data) || new Date();
+  const valorParcela = Math.round((valorTotal / parcelas) * 100) / 100;
+  let acumulado = 0;
+  for (let i = 0; i < parcelas; i++) {
+    const venc = new Date(base.getFullYear(), base.getMonth() + i, base.getDate());
+    let v = valorParcela;
+    if (i === parcelas - 1) v = Math.round((valorTotal - acumulado) * 100) / 100; // ajusta arredondamento na última
+    acumulado += valorParcela;
+    recebiveisManuais.push({
+      id: 'man_' + Date.now() + '_' + i,
+      tipo: 'manual',
+      categoria,
+      descricao: parcelas > 1 ? `${descricao} (${i + 1}/${parcelas})` : descricao,
+      referente,
+      valorPrevisto: v,
+      dataPrevista: _fmtDataISO(venc),
+      status: 'previsto',
+      dataBaixa: null, valorBaixa: null, oculto: false,
+      criadoEm: new Date().toISOString(),
+    });
+  }
   saveState();
   closeModal('modal-recebivel-manual');
   renderContasReceber();
-  toast('Recebível manual cadastrado.', 'success');
+  toast(parcelas > 1 ? `${parcelas} parcelas cadastradas.` : 'Recebível manual cadastrado.', 'success');
 }
 
 function _hojeISO() {
@@ -3206,8 +3262,8 @@ function renderContasReceber() {
         <td style="text-align:center;white-space:nowrap">
           ${c.status === 'baixado'
             ? `<button class="btn btn-secondary btn-sm" onclick="desfazerBaixa('${c.id}')">Desfazer</button>`
-            : `<button class="btn btn-primary btn-sm" onclick="abrirBaixa('${c.id}')">Baixar</button>`}
-          <button class="btn btn-secondary btn-sm" onclick="toggleOcultarConta('${c.id}')">${c.oculto ? 'Mostrar' : 'Ocultar'}</button>
+            : `<button class="btn btn-primary btn-sm" onclick="abrirBaixa('${c.id}')">Baixar</button>
+               <button class="btn btn-secondary btn-sm" onclick="toggleOcultarConta('${c.id}')">${c.oculto ? 'Mostrar' : 'Ocultar'}</button>`}
         </td>
       </tr>${detalheRow}`;
   }).join('');
@@ -3233,6 +3289,7 @@ function renderContasReceber() {
 
 function abrirLancamentoCaixa() {
   document.getElementById('cx-tipo').value = 'entrada';
+  document.getElementById('cx-categoria').innerHTML = _opcoesCategorias('Despesas');
   document.getElementById('cx-descricao').value = '';
   document.getElementById('cx-valor').value = '';
   document.getElementById('cx-data').value = _hojeISO();
@@ -3240,13 +3297,14 @@ function abrirLancamentoCaixa() {
 }
 function salvarLancamentoCaixa() {
   const tipo = document.getElementById('cx-tipo').value;
+  const categoria = document.getElementById('cx-categoria').value || 'Outros';
   const descricao = document.getElementById('cx-descricao').value.trim();
-  const valor = Number(document.getElementById('cx-valor').value || 0);
+  const valor = parseMoeda(document.getElementById('cx-valor').value);
   const data = document.getElementById('cx-data').value;
   if (!descricao) { toast('Informe a descrição.', 'error'); return; }
   if (!(valor > 0)) { toast('Informe um valor válido.', 'error'); return; }
   if (!data) { toast('Informe a data.', 'error'); return; }
-  lancarCaixa({ data, valor, tipo, descricao, origemTipo: 'manual', origemId: null });
+  lancarCaixa({ data, valor, tipo, categoria, descricao, origemTipo: 'manual', origemId: null });
   saveState();
   closeModal('modal-caixa-manual');
   renderFluxoCaixa();
@@ -3300,6 +3358,7 @@ function renderFluxoCaixa() {
     return `<tr>
       <td style="text-align:center">${_fmtDataBR(l.data)}</td>
       <td>${escapeHtml(l.descricao || '')}${l.origemTipo === 'conta_receber' ? ' <span class="badge badge-blue" style="font-size:10px">auto</span>' : ''}</td>
+      <td style="text-align:center"><span class="badge" style="background:var(--surface3);color:var(--text2)">${escapeHtml(l.categoria || 'Outros')}</span></td>
       <td style="text-align:center">${ent ? '<span class="badge badge-green">Entrada</span>' : '<span class="badge badge-yellow">Saída</span>'}</td>
       <td style="text-align:right;font-weight:700;color:${ent ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)'}">${ent ? '+' : '−'} ${fmtBRL(l.valor)}</td>
       <td style="text-align:center">${l.origemTipo === 'conta_receber' ? '<span style="color:var(--text3);font-size:12px">baixa</span>' : `<button class="btn btn-secondary btn-sm" onclick="excluirLancamentoCaixa('${l.id}')">Excluir</button>`}</td>
@@ -3310,7 +3369,7 @@ function renderFluxoCaixa() {
     <div class="table-wrap">
       <table style="width:100%">
         <thead><tr>
-          <th style="text-align:center">Data</th><th>Descrição</th><th style="text-align:center">Tipo</th>
+          <th style="text-align:center">Data</th><th>Descrição</th><th style="text-align:center">Categoria</th><th style="text-align:center">Tipo</th>
           <th style="text-align:right">Valor</th><th style="text-align:center">Ação</th>
         </tr></thead>
         <tbody>${linhas}</tbody>

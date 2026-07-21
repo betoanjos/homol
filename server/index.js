@@ -352,6 +352,127 @@ app.get('/api/tupi/recargas', async (req, res) => {
   }
 });
 
+// ── Diagnóstico de divergência de faturamento ────────────────────────────────
+// Compara, para uma estação e período, o que a API Tupi retornou (tupi_sessions,
+// sempre atualizado pelo sync) contra as recargas efetivamente usadas no EV Core
+// (app_state.data.recargas). Aponta sessão a sessão de onde vem a diferença.
+// Uso: GET /api/tupi/diagnostico?stationId=1124387764&dateFrom=2026-06-01&dateTo=2026-06-30
+// (datas interpretadas no fuso America/Sao_Paulo, inclusivas)
+app.get('/api/tupi/diagnostico', async (req, res) => {
+  try {
+    const stationId = String(req.query.stationId || '').trim();
+    const dateFrom = String(req.query.dateFrom || '').trim(); // YYYY-MM-DD
+    const dateTo = String(req.query.dateTo || '').trim();     // YYYY-MM-DD
+    if (!stationId) return res.status(400).json({ error: 'stationId é obrigatório.' });
+
+    // 1) Lado API: tudo que a Tupi reportou para a estação no período (sem filtro de kwh).
+    const condApi = [`s.location_id = $1`];
+    const paramsApi = [stationId];
+    if (dateFrom) { paramsApi.push(dateFrom); condApi.push(`(s.start_date_time AT TIME ZONE 'America/Sao_Paulo')::date >= $${paramsApi.length}::date`); }
+    if (dateTo)   { paramsApi.push(dateTo);   condApi.push(`(s.start_date_time AT TIME ZONE 'America/Sao_Paulo')::date <= $${paramsApi.length}::date`); }
+    const apiRows = (await pool.query(
+      `SELECT s.id, s.status, s.kwh, s.currency,
+              s.total_cost_excl_vat, s.total_cost_incl_vat,
+              s.start_date_time, s.end_date_time, s.last_updated,
+              to_char(s.start_date_time AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD HH24:MI') AS inicio_local
+         FROM tupi_sessions s
+        WHERE ${condApi.join(' AND ')}
+        ORDER BY s.start_date_time`,
+      paramsApi
+    )).rows;
+
+    // 2) Lado EV Core: recargas do estado de negócio para a mesma estação/período.
+    const stateRow = await pool.query('SELECT data FROM app_state WHERE id = 1');
+    const state = stateRow.rows[0]?.data || {};
+    const todasRecargas = Array.isArray(state.recargas) ? state.recargas : [];
+    const noPeriodo = (dataStr) => {
+      const d = String(dataStr || '').slice(0, 10); // "YYYY-MM-DD"
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+      if (dateFrom && d < dateFrom) return false;
+      if (dateTo && d > dateTo) return false;
+      return true;
+    };
+    const evRecargas = todasRecargas.filter(r =>
+      String(r.idEstacao || '') === stationId && noPeriodo(r.data)
+    );
+    const evPorUid = new Map(evRecargas.map(r => [String(r.uid || ''), r]));
+
+    const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+    const round2 = v => Math.round(v * 100) / 100;
+    const valorApi = s => s.total_cost_incl_vat != null ? num(s.total_cost_incl_vat) : num(s.total_cost_excl_vat);
+
+    // 3) Cruzamento sessão a sessão.
+    const faltandoNoEV = [];      // está na API, não está no EV Core
+    const valorDivergente = [];   // está nos dois, mas com valor diferente
+    const ocultasNoEV = [];       // existe no EV Core mas está marcada como oculta/removida
+    const semImpostoFallback = []; // sessões sem incl_vat (EV Core usa excl_vat)
+    let totalApi = 0, totalEV = 0;
+
+    for (const s of apiRows) {
+      const vApi = valorApi(s);
+      totalApi += vApi;
+      if (s.total_cost_incl_vat == null && s.total_cost_excl_vat != null) {
+        semImpostoFallback.push({ id: s.id, inicio: s.inicio_local, excl_vat: num(s.total_cost_excl_vat) });
+      }
+      const r = evPorUid.get(String(s.id));
+      if (!r) {
+        faltandoNoEV.push({
+          id: s.id, inicio: s.inicio_local, status: s.status,
+          kwh: s.kwh != null ? Number(s.kwh) : null, valorApi: round2(vApi),
+          motivoProvavel: !(Number(s.kwh) > 0)
+            ? 'kwh <= 0 ou nulo — excluída pelo filtro s.kwh > 0 do listRecargas'
+            : 'não importada (verificar dedup/período no frontend)'
+        });
+        continue;
+      }
+      const vEV = num(r.cobranca ?? r.total ?? r.custo);
+      totalEV += vEV;
+      if (r.excluidaPendente || r.ocultaPendente || r.removidaManual) {
+        ocultasNoEV.push({ id: s.id, inicio: s.inicio_local, valorEV: round2(vEV) });
+      }
+      if (Math.abs(vEV - vApi) >= 0.01) {
+        valorDivergente.push({
+          id: s.id, inicio: s.inicio_local, status: s.status,
+          valorApi: round2(vApi), valorEVCore: round2(vEV), diff: round2(vApi - vEV),
+          lastUpdatedApi: s.last_updated, fonteEV: r.fonte || 'desconhecida',
+          importadaEm: r.importadaEm || null
+        });
+      }
+    }
+
+    // 4) Recargas no EV Core que a API não tem para essa estação/período (ex.: CSV/manual).
+    const idsApi = new Set(apiRows.map(s => String(s.id)));
+    const soNoEV = evRecargas
+      .filter(r => !idsApi.has(String(r.uid || '')))
+      .map(r => ({ uid: r.uid, data: r.data, fonte: r.fonte || 'desconhecida', valorEVCore: round2(num(r.cobranca ?? r.total ?? r.custo)) }));
+    soNoEV.forEach(r => { totalEV += r.valorEVCore; });
+
+    valorDivergente.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+
+    res.json({
+      stationId, dateFrom: dateFrom || null, dateTo: dateTo || null,
+      totais: {
+        api_tupi: round2(totalApi),
+        ev_core: round2(totalEV),
+        diferenca: round2(totalApi - totalEV)
+      },
+      resumo: {
+        sessoes_api: apiRows.length,
+        recargas_ev_core: evRecargas.length,
+        faltando_no_ev_core: faltandoNoEV.length,
+        valor_divergente: valorDivergente.length,
+        ocultas_no_ev_core: ocultasNoEV.length,
+        sem_incl_vat: semImpostoFallback.length,
+        apenas_no_ev_core: soNoEV.length
+      },
+      faltandoNoEV, valorDivergente, ocultasNoEV, semImpostoFallback, apenasNoEV: soNoEV
+    });
+  } catch (err) {
+    console.error('Erro no diagnóstico Tupi:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Dados do usuário de uma sessão específica (consulta ao vivo na Tupi).
 app.get('/api/tupi/sessions/:id/user-data', async (req, res) => {
   try {

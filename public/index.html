@@ -661,13 +661,16 @@
           <label style="margin:0">Período</label>
           <select id="dash-period-type" onchange="setDashboardPeriodo(this.value)" style="min-width:160px">
             <option value="current_month">Mês atual</option>
-            <option value="last_30">Últimos 30 dias</option>
+            <option value="last_month">Mês passado</option>
+            <option value="two_months_ago">Mês retrasado</option>
+            <option value="today">Hoje</option>
             <option value="current_year">Ano atual</option>
-            <option value="all">Todo período</option>
+            <option value="all">Tudo</option>
             <option value="custom">Personalizado</option>
           </select>
           <input type="date" id="dash-period-start" onchange="setDashboardPeriodoCustom()" style="width:145px;display:none">
           <input type="date" id="dash-period-end" onchange="setDashboardPeriodoCustom()" style="width:145px;display:none">
+          <button class="btn btn-secondary btn-sm" onclick="exportarDashboardPDF()" title="Exportar resumo em PDF">📄 Exportar PDF</button>
         </div>
       </div>
 
@@ -677,11 +680,6 @@
           <div class="stat-value" id="stat-clientes-total">0</div>
           <div class="stat-label">Clientes Totais</div>
         </div>
-        <div class="stat-card blue">
-          <div class="stat-icon">🧾</div>
-          <div class="stat-value" id="stat-clientes-pos">0</div>
-          <div class="stat-label">Clientes Pós-pagos</div>
-        </div>
         <div class="stat-card yellow">
           <div class="stat-icon">⚡</div>
           <div class="stat-value" id="stat-kwh-total">0</div>
@@ -689,34 +687,48 @@
         </div>
         <div class="stat-card green">
           <div class="stat-icon">💰</div>
-          <div class="stat-value" id="stat-faturamento-bruto">R$0</div>
-          <div class="stat-label">Faturamento Bruto</div>
+          <div class="stat-value" id="stat-faturamento-bruto">R$ 0,00</div>
+          <div class="stat-label">Faturamento</div>
         </div>
         <div class="stat-card red">
+          <div class="stat-icon">💸</div>
+          <div class="stat-value" id="stat-despesas">R$ 0,00</div>
+          <div class="stat-label">Despesas</div>
+        </div>
+        <div class="stat-card blue">
           <div class="stat-icon">📈</div>
-          <div class="stat-value" id="stat-lucro-rede">R$0</div>
+          <div class="stat-value" id="stat-lucro-rede">R$ 0,00</div>
           <div class="stat-label">Lucro da Rede</div>
         </div>
       </div>
 
-      <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-top:8px">
-        <div class="stat-card yellow">
-          <div class="stat-icon">📂</div>
-          <div class="stat-value" id="stat-faturas-abertas">0</div>
-          <div class="stat-label">Faturas em Aberto</div>
-          <div id="stat-faturas-abertas-valor" style="margin-top:8px;font-size:13px;color:var(--text2)">R$0,00</div>
-        </div>
-        <div class="stat-card green">
-          <div class="stat-icon">✅</div>
-          <div class="stat-value" id="stat-faturas-pagas">0</div>
-          <div class="stat-label">Faturas Pagas</div>
-          <div id="stat-faturas-pagas-valor" style="margin-top:8px;font-size:13px;color:var(--text2)">R$0,00</div>
-        </div>
-        <div class="stat-card blue">
-          <div class="stat-icon">📄</div>
-          <div class="stat-value" id="stat-faturas-total">0</div>
-          <div class="stat-label">Total de Faturas Emitidas</div>
-          <div id="stat-faturas-total-valor" style="margin-top:8px;font-size:13px;color:var(--text2)">R$0,00</div>
+      <div id="dash-comparacao-row" style="margin-top:8px">
+        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin:4px 2px 8px" id="dash-comparacao-titulo">Período anterior</div>
+        <div class="stats-grid" style="grid-template-columns:repeat(4,1fr)">
+          <div class="stat-card yellow">
+            <div class="stat-icon">⚡</div>
+            <div class="stat-value" id="stat-comp-kwh">0 kWh</div>
+            <div class="stat-label">Energia Total</div>
+            <div id="stat-comp-kwh-diff" style="margin-top:8px;font-size:13px;font-weight:700">—</div>
+          </div>
+          <div class="stat-card green">
+            <div class="stat-icon">💰</div>
+            <div class="stat-value" id="stat-comp-faturamento">R$ 0,00</div>
+            <div class="stat-label">Faturamento</div>
+            <div id="stat-comp-faturamento-diff" style="margin-top:8px;font-size:13px;font-weight:700">—</div>
+          </div>
+          <div class="stat-card red">
+            <div class="stat-icon">💸</div>
+            <div class="stat-value" id="stat-comp-despesas">R$ 0,00</div>
+            <div class="stat-label">Despesas</div>
+            <div id="stat-comp-despesas-diff" style="margin-top:8px;font-size:13px;font-weight:700">—</div>
+          </div>
+          <div class="stat-card blue">
+            <div class="stat-icon">📈</div>
+            <div class="stat-value" id="stat-comp-lucro">R$ 0,00</div>
+            <div class="stat-label">Lucro da Rede</div>
+            <div id="stat-comp-lucro-diff" style="margin-top:8px;font-size:13px;font-weight:700">—</div>
+          </div>
         </div>
       </div>
 
@@ -815,6 +827,19 @@
           <div class="search-bar" style="width:280px">
             <span class="search-icon">🔍</span>
             <input type="text" id="search-faturas" placeholder="Buscar por nome, placa ou RFID..." oninput="renderFaturas()" style="width:100%">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <label style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;white-space:nowrap">Período</label>
+            <select id="filtro-periodo-faturas" onchange="aplicarPresetPeriodo(this.value, 'filtro-data-ini', 'filtro-data-fim', renderFaturas)" style="min-width:150px">
+              <option value="">—</option>
+              <option value="current_month">Mês atual</option>
+              <option value="last_month">Mês passado</option>
+              <option value="two_months_ago">Mês retrasado</option>
+              <option value="today">Hoje</option>
+              <option value="current_year">Ano atual</option>
+              <option value="all">Tudo</option>
+              <option value="custom">Personalizado</option>
+            </select>
           </div>
           <div style="display:flex;align-items:center;gap:8px">
             <label style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;white-space:nowrap">De</label>
@@ -1532,6 +1557,10 @@
           </span>
         </label>
         <input type="text" id="est-idTupi" placeholder="1124387764" style="font-family:'DM Mono',monospace">
+      </div>
+      <div class="form-group">
+        <label>Taxa Tupi (%) <span style="color:var(--text3);font-weight:400">— do CNPJ desta estação</span></label>
+        <input type="number" id="est-taxaTupiPct" min="0" max="100" step="0.01" placeholder="8">
       </div>
       <div class="form-group">
         <label>Parceiro vinculado</label>

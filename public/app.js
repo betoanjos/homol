@@ -176,7 +176,11 @@ async function importarRecargasAPI({ silencioso = true } = {}) {
       // Sem RFID no caminho da API → só recarga_livre (valor 0) ou avulso_app.
       const tipoOperacao = valorTotal === 0 ? 'recarga_livre' : 'avulso_app';
 
-      const taxaTupi = valorTotal * 0.08;
+      // Taxa Tupi pela estação (multi-CNPJ). A API OCPI não expõe o valor do
+      // cupom, então aqui a base é o valor cobrado; se a mesma sessão vier
+      // depois pelo CSV (que traz "Valor do Cupom"), o CSV corrige a taxa.
+      const taxaTupiPct = getTaxaTupiPctEstacao(idEstacao, nomeEstacao);
+      const taxaTupi = valorTotal * (taxaTupiPct / 100);
       const valorRec = valorTotal > 0 ? valorTotal - taxaTupi : 0;
 
       const _recTemp = { idEstacao, nomeEstacao, equipamento: nomeEstacao, local: nomeEstacao };
@@ -213,6 +217,8 @@ async function importarRecargasAPI({ silencioso = true } = {}) {
         total:          valorTotal,
         custo:          valorTotal,
         taxaTupi,
+        taxaTupiPct,
+        valorCupom:     0,
         saldo:          valorRec,
         rfid:           '',
         email,
@@ -1055,9 +1061,11 @@ function limparFiltrosFaturas() {
   const s = document.getElementById('search-faturas');
   const i = document.getElementById('filtro-data-ini');
   const f = document.getElementById('filtro-data-fim');
+  const p = document.getElementById('filtro-periodo-faturas');
   if (s) s.value = '';
   if (i) i.value = '';
   if (f) f.value = '';
+  if (p) p.value = '';
   renderFaturas();
 }
 
@@ -1521,6 +1529,7 @@ async function parseTupiHistoricoCSV(csvText, filename) {
   const iIdTrans    = col(['ID DA TRANSACAO']);
   const iKwh        = col(['ENERGIA EM KWH']);
   const iValorTotal = col(['VALOR TOTAL']);
+  const iValorCupom = col(['VALOR DO CUPOM']);
   const iFormaPag   = col(['FORMA DE PAGAMENTO']);
   const iToken      = col(['TOKEN DE CARGA']);
   const iInicio     = col(['INICIO (HORARIO LOCAL)']);
@@ -1557,6 +1566,7 @@ async function parseTupiHistoricoCSV(csvText, filename) {
     const email       = get(iEmail).toLowerCase();
     const kwh         = toNum(get(iKwh));
     const valorTotal  = toNum(get(iValorTotal));
+    const valorCupom  = toNum(get(iValorCupom));   // desconto do cupom (Tupi cobra taxa sobre o bruto)
     const formaPag    = get(iFormaPag);
     const token       = get(iToken).trim();
     const dataInicio  = parsearDataLocal(get(iInicio));
@@ -1578,8 +1588,10 @@ async function parseTupiHistoricoCSV(csvText, filename) {
     else if (valorTotal === 0)           tipoOperacao = 'recarga_livre';
     else                                 tipoOperacao = 'avulso_app';
 
-    // Taxa Tupi estimada em 8%
-    const taxaTupi     = valorTotal * 0.08;
+    // Taxa Tupi: percentual da estação (multi-CNPJ), sobre o valor BRUTO da
+    // sessão (valor cobrado + cupom) — a Tupi não desconta cupons da base.
+    const taxaTupiPct  = getTaxaTupiPctEstacao(idEstacao, nomeEstacao);
+    const taxaTupi     = (valorTotal + valorCupom) * (taxaTupiPct / 100);
     const valorRec     = valorTotal > 0 ? valorTotal - taxaTupi : 0;
 
     // Buscar parceiro pelo nome canônico da estação
@@ -1621,6 +1633,8 @@ async function parseTupiHistoricoCSV(csvText, filename) {
       total:          valorTotal,
       custo:          valorTotal,
       taxaTupi,
+      taxaTupiPct,
+      valorCupom,
       saldo:          valorRec,
       rfid,
       email,
@@ -1664,6 +1678,29 @@ async function parseTupiHistoricoCSV(csvText, filename) {
     const uidsGlobal   = new Set(recargas.map(r => r.uid).filter(Boolean));
     const novasUnicas  = novas.filter(r => !uidsGlobal.has(r.uid) && !recargaJaExiste(r));
     const duplicadas   = novas.filter(r =>  uidsGlobal.has(r.uid) ||  recargaJaExiste(r));
+
+    // Corrigir cupom/taxa das recargas que já existiam (importadas antes pela
+    // API, que não expõe o "Valor do Cupom"): o CSV traz o dado exato, então a
+    // taxa Tupi é recalculada sobre o bruto (valor + cupom). Só esses campos
+    // são tocados — valores editados manualmente permanecem intactos.
+    let taxasCorrigidas = 0;
+    duplicadas.forEach(d => {
+      const existente = recargas.find(x => (x.uid || gerarRecargaUID(x)) === d.uid);
+      if (!existente) return;
+      const cupomNovo = Number(d.valorCupom || 0);
+      const pctNovo   = Number(d.taxaTupiPct || 0) || getTaxaTupiPctEstacao(existente.idEstacao, normalizarEstacao(existente));
+      const taxaNova  = (Number(existente.cobranca ?? existente.total ?? existente.custo ?? 0) + cupomNovo) * (pctNovo / 100);
+      const mudou = Number(existente.valorCupom || 0) !== cupomNovo
+        || Number(existente.taxaTupiPct || 0) !== pctNovo
+        || Math.abs(Number(existente.taxaTupi || 0) - taxaNova) >= 0.005;
+      if (mudou) {
+        existente.valorCupom  = cupomNovo;
+        existente.taxaTupiPct = pctNovo;
+        existente.taxaTupi    = taxaNova;
+        taxasCorrigidas++;
+      }
+    });
+    if (taxasCorrigidas > 0) toast(`${taxasCorrigidas} recarga(s) com cupom/taxa Tupi corrigidos pelo CSV.`, 'success');
 
     detectarDivergenciasTupi(novas);
     recargas.push(...novasUnicas);
@@ -2080,7 +2117,7 @@ function renderParseResult(novas, periodo) {
             <th>Valor Total</th>
             <th>Valor Pago</th>
             <th>Desconto</th>
-            <th>Taxa Tupi (8%)</th>
+            <th>Taxa Tupi</th>
             <th>Saldo Tupi</th>
             <th>Lucro Líquido</th>
             <th>Tipo</th>
@@ -2681,9 +2718,11 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
   const totalRepasseParceiro = custoEnergia + comissaoParceiro;
 
   // ── Nosso lucro interno (não aparece no PDF do parceiro) ──
-  // Taxa Tupi (8%) = custo nosso, pago à plataforma Tupi
-  const taxaTupiPct    = 8;
-  const taxaTupi       = receitaLiquida * (taxaTupiPct / 100);
+  // Taxa Tupi = custo nosso, pago à plataforma. Somada recarga a recarga:
+  // cada recarga carrega a taxa da sua estação (multi-CNPJ, 8% ou 10%),
+  // calculada sobre o bruto Tupi (valor + cupom).
+  const taxaTupiPct    = labelTaxaTupi(lista);
+  const taxaTupi       = somaTaxaTupi(lista);
   // Lucro EV Parking = receita líquida (após descontos pós-pagos) - taxa Tupi - custo energia - mensalidade - comissão parceiro
   // (taxasOperacionais já são receita nossa embutida na cobrança, não deduz como custo interno)
   const lucroEVParking = receitaLiquida - taxaTupi - custoEnergia - mensalidade - comissaoParceiro;
@@ -3602,10 +3641,10 @@ function renderParceiros() {
 
   const dash = document.getElementById('parceiros-dashboard');
   if (dash) {
-    // Ordem: Faturamento Bruto > Taxa Tupi (8%) [custo nosso] > kWh > Custo Energia > Comissão Parceiros > Lucro Líquido
+    // Ordem: Faturamento Bruto > Taxa Tupi [custo nosso] > kWh > Custo Energia > Comissão Parceiros > Lucro Líquido
     dash.innerHTML = `<div class="stats-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:16px">
       <div class="stat-card green"><div class="stat-value">${moneyBR(totalBruto)}</div><div class="stat-label">Faturamento bruto</div></div>
-      <div class="stat-card red"><div class="stat-value">${moneyBR(totalTaxaTupi)}</div><div class="stat-label">Taxa Tupi (8%) — custo nosso</div></div>
+      <div class="stat-card red"><div class="stat-value">${moneyBR(totalTaxaTupi)}</div><div class="stat-label">Taxa Tupi — custo nosso</div></div>
       <div class="stat-card blue"><div class="stat-value">${formatKwh(totalKwh)}</div><div class="stat-label">kWh consumidos</div></div>
       <div class="stat-card yellow"><div class="stat-value">${moneyBR(totalEnergia)}</div><div class="stat-label">Custo energia</div></div>
       <div class="stat-card blue"><div class="stat-value">${moneyBR(totalComissao)}</div><div class="stat-label">Comissão parceiros</div></div>
@@ -3628,7 +3667,7 @@ function renderParceiros() {
       calc.compromisoMinimo > 0
         ? `Comissão parceiro: ${moneyBR(calc.comissaoParceiro)} (mín. ${moneyBR(calc.compromisoMinimo)})`
         : `Comissão parceiro: ${moneyBR(calc.comissaoParceiro)}`,
-      `Taxa Tupi 8% (custo nosso): ${moneyBR(calc.taxaTupi)}`,
+      `Taxa Tupi ${calc.taxaTupiPct} (custo nosso): ${moneyBR(calc.taxaTupi)}`,
     ].filter(Boolean).join(' · ');
 
     return `<div class="card" style="margin-bottom:16px">
@@ -4627,6 +4666,52 @@ function getEstacaoCadastrada(idTupi, nomeEstacao) {
   return null;
 }
 
+// ─── Taxa Tupi por estação (multi-CNPJ) ──────────────────────────────────────
+// Cada estação pertence a um cadastro (CNPJ) na Tupi, com taxa própria
+// (ex.: CNPJ atual = 8%, CNPJ novo = 10%). A taxa é configurada no cadastro
+// da estação e GRAVADA em cada recarga na importação (taxaTupiPct/taxaTupi),
+// preservando o histórico se a taxa mudar no futuro.
+const TAXA_TUPI_PADRAO_PCT = 8;
+
+// Percentual da taxa Tupi vigente para uma estação (por id Tupi e/ou nome).
+function getTaxaTupiPctEstacao(idTupi, nomeEstacao) {
+  const est = getEstacaoCadastrada(idTupi ? String(idTupi) : '', nomeEstacao || '');
+  const pct = Number(est?.taxaTupiPct);
+  return Number.isFinite(pct) && pct > 0 ? pct : TAXA_TUPI_PADRAO_PCT;
+}
+
+// Percentual aplicável a uma recarga: o gravado nela > o da estação > padrão.
+function getTaxaTupiPctRecarga(r) {
+  const gravado = Number(r?.taxaTupiPct);
+  if (Number.isFinite(gravado) && gravado > 0) return gravado;
+  return getTaxaTupiPctEstacao(r?.idEstacao, normalizarEstacao(r || {}));
+}
+
+// Valor da taxa Tupi de uma recarga.
+// Base = valor BRUTO da sessão na Tupi (valor cobrado + cupom de desconto),
+// pois a Tupi calcula a taxa sobre o bruto, sem considerar cupons.
+function taxaTupiDaRecarga(r) {
+  if (!r) return 0;
+  if (r.taxaTupi != null && Number.isFinite(Number(r.taxaTupi))) return Number(r.taxaTupi);
+  const valor = Number(r.cobranca ?? r.total ?? r.custo ?? 0);
+  const cupom = Number(r.valorCupom || 0);
+  if (!(valor + cupom > 0)) return 0;
+  return (valor + cupom) * (getTaxaTupiPctRecarga(r) / 100);
+}
+
+// Soma da taxa Tupi de uma lista de recargas (usada pelos relatórios).
+function somaTaxaTupi(lista) {
+  return (lista || []).reduce((s, r) => s + taxaTupiDaRecarga(r), 0);
+}
+
+// Rótulo do percentual para exibição: "8%", "10%" ou "8–10%" quando misto.
+function labelTaxaTupi(lista) {
+  const pcts = [...new Set((lista || []).map(r => getTaxaTupiPctRecarga(r)))].sort((a, b) => a - b);
+  if (!pcts.length) return TAXA_TUPI_PADRAO_PCT + '%';
+  if (pcts.length === 1) return pcts[0] + '%';
+  return pcts[0] + '–' + pcts[pcts.length - 1] + '%';
+}
+
 // Parceiro vinculado à estação (via cadastro de estações, preferencial, ou via equipamentos do parceiro)
 function getParceiroDeEstacao(idTupi, nomeEstacao) {
   const est = getEstacaoCadastrada(idTupi, nomeEstacao);
@@ -4649,6 +4734,7 @@ function openModalEstacao(id = null) {
   const set = (key, val) => { const el = document.getElementById('est-' + key); if (el) el.value = val ?? ''; };
   set('nome',            e?.nome || '');
   set('idTupi',          e?.idTupi || '');
+  set('taxaTupiPct',     e?.taxaTupiPct ?? TAXA_TUPI_PADRAO_PCT);
   set('endereco',        e?.endereco || '');
   set('potencia',        e?.potencia || '');
   set('conector',        e?.conector || '');
@@ -4752,6 +4838,7 @@ function salvarEstacao() {
     id:               editingEstacaoId || 'est_' + Date.now(),
     nome:             get('nome'),
     idTupi:           get('idTupi'),
+    taxaTupiPct:      Number(get('taxaTupiPct')) > 0 ? Number(get('taxaTupiPct')) : TAXA_TUPI_PADRAO_PCT,
     parceiroId:       get('parceiroId') || null,
     endereco:         get('endereco'),
     potencia:         get('potencia'),
@@ -5063,10 +5150,11 @@ function renderPayback() {
     recsEstacao.forEach(r => {
       const key = recargaMesKey(r);
       if (!key) return;
-      if (!porMes[key]) porMes[key] = { bruto: 0, kwh: 0, descontos: 0 };
+      if (!porMes[key]) porMes[key] = { bruto: 0, kwh: 0, descontos: 0, taxaTupi: 0 };
       porMes[key].bruto    += Number(r.cobranca ?? r.total ?? r.custo ?? 0);
       porMes[key].kwh      += Number(r.kwh || 0);
       porMes[key].descontos += descontoPosPagoDaRecarga(r);
+      porMes[key].taxaTupi += taxaTupiDaRecarga(r); // taxa da estação (multi-CNPJ), base bruta Tupi
     });
 
     // Calcular lucro EV Parking por mês — mesma fórmula de calcularRelatorioParceiro
@@ -5075,8 +5163,8 @@ function renderPayback() {
       const kwh            = dados.kwh;
       // 1. Descontos pós-pagos (clientes com desconto contratual)
       const receitaLiquida = Math.max(0, bruto - dados.descontos);
-      // 2. Taxa Tupi 8% sobre receita líquida (não sobre bruto)
-      const taxaTupi       = receitaLiquida * 0.08;
+      // 2. Taxa Tupi somada recarga a recarga (taxa da estação, base bruta Tupi c/ cupom)
+      const taxaTupi       = dados.taxaTupi;
       // 3. Custo de energia repassado ao parceiro
       const custoEn        = parceiro ? kwh * Number(parceiro.custoEnergia || 0) : 0;
       // 4. Mensalidade repassada ao parceiro
@@ -5328,36 +5416,104 @@ function fimDoDia(d) {
   return x;
 }
 
-function getDashboardPeriodo() {
-  const hoje = new Date();
-  let inicio = null;
-  let fim = null;
-  let label = 'Todo período';
+// Tipos de período padronizados (usados no dashboard e reutilizáveis em
+// outras telas via aplicarPresetPeriodo): current_month, last_month,
+// two_months_ago, today, current_year, all, custom.
+const PERIODO_TIPOS_VALIDOS = ['current_month', 'last_month', 'two_months_ago', 'today', 'current_year', 'all', 'custom'];
 
-  if (dashboardPeriodoTipo === 'last_30') {
+function labelMesAno(d) {
+  const l = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  return l.charAt(0).toUpperCase() + l.slice(1);
+}
+
+// Calcula {inicio, fim, label} para um tipo de período padronizado.
+function calcularPeriodoPadrao(tipo, customStart, customEnd) {
+  const hoje = new Date();
+  let inicio = null, fim = null, label = 'Tudo';
+
+  if (tipo === 'today') {
+    inicio = inicioDoDia(hoje);
     fim = fimDoDia(hoje);
-    inicio = inicioDoDia(new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 29));
-    label = 'Últimos 30 dias';
-  } else if (dashboardPeriodoTipo === 'current_year') {
+    label = 'Hoje (' + hoje.toLocaleDateString('pt-BR') + ')';
+  } else if (tipo === 'last_month') {
+    const base = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+    inicio = inicioDoDia(base);
+    fim = fimDoDia(new Date(base.getFullYear(), base.getMonth() + 1, 0));
+    label = labelMesAno(base);
+  } else if (tipo === 'two_months_ago') {
+    const base = new Date(hoje.getFullYear(), hoje.getMonth() - 2, 1);
+    inicio = inicioDoDia(base);
+    fim = fimDoDia(new Date(base.getFullYear(), base.getMonth() + 1, 0));
+    label = labelMesAno(base);
+  } else if (tipo === 'current_year') {
     inicio = inicioDoDia(new Date(hoje.getFullYear(), 0, 1));
     fim = fimDoDia(new Date(hoje.getFullYear(), 11, 31));
     label = String(hoje.getFullYear());
-  } else if (dashboardPeriodoTipo === 'custom') {
-    inicio = dashboardPeriodoCustomStart ? inicioDoDia(new Date(dashboardPeriodoCustomStart + 'T00:00:00')) : null;
-    fim = dashboardPeriodoCustomEnd ? fimDoDia(new Date(dashboardPeriodoCustomEnd + 'T23:59:59')) : null;
+  } else if (tipo === 'custom') {
+    inicio = customStart ? inicioDoDia(new Date(customStart + 'T00:00:00')) : null;
+    fim = customEnd ? fimDoDia(new Date(customEnd + 'T23:59:59')) : null;
     const iniTxt = inicio ? inicio.toLocaleDateString('pt-BR') : 'início';
     const fimTxt = fim ? fim.toLocaleDateString('pt-BR') : 'hoje';
     label = `${iniTxt} até ${fimTxt}`;
-  } else if (dashboardPeriodoTipo === 'all') {
-    label = 'Todo período';
-  } else {
+  } else if (tipo === 'all') {
+    label = 'Tudo';
+  } else { // current_month (padrão)
     inicio = inicioDoDia(new Date(hoje.getFullYear(), hoje.getMonth(), 1));
     fim = fimDoDia(new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0));
-    label = hoje.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
-    label = label.charAt(0).toUpperCase() + label.slice(1);
+    label = labelMesAno(hoje);
   }
+  return { inicio, fim, label, tipo: PERIODO_TIPOS_VALIDOS.includes(tipo) ? tipo : 'current_month' };
+}
 
-  return { inicio, fim, label };
+function getDashboardPeriodo() {
+  // Normalizar valores antigos salvos (ex.: 'last_30' de versões anteriores)
+  if (!PERIODO_TIPOS_VALIDOS.includes(dashboardPeriodoTipo)) dashboardPeriodoTipo = 'current_month';
+  return calcularPeriodoPadrao(dashboardPeriodoTipo, dashboardPeriodoCustomStart, dashboardPeriodoCustomEnd);
+}
+
+// ── Período anterior equivalente (para os cards de comparação) ──────────────
+// Retorna null quando não há comparação possível (tipo 'all').
+function getDashboardPeriodoAnterior(periodo) {
+  const tipo = periodo.tipo;
+  const hoje = new Date();
+  if (tipo === 'all') return null;
+
+  if (tipo === 'current_month')  return calcularPeriodoPadrao('last_month');
+  if (tipo === 'last_month')     return calcularPeriodoPadrao('two_months_ago');
+  if (tipo === 'two_months_ago') {
+    const base = new Date(hoje.getFullYear(), hoje.getMonth() - 3, 1);
+    return { inicio: inicioDoDia(base), fim: fimDoDia(new Date(base.getFullYear(), base.getMonth() + 1, 0)), label: labelMesAno(base), tipo: 'custom' };
+  }
+  if (tipo === 'today') {
+    const ontem = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 1);
+    return { inicio: inicioDoDia(ontem), fim: fimDoDia(ontem), label: 'Ontem (' + ontem.toLocaleDateString('pt-BR') + ')', tipo: 'custom' };
+  }
+  if (tipo === 'current_year') {
+    const ano = hoje.getFullYear() - 1;
+    return { inicio: inicioDoDia(new Date(ano, 0, 1)), fim: fimDoDia(new Date(ano, 11, 31)), label: String(ano), tipo: 'custom' };
+  }
+  // custom: mesma duração, imediatamente anterior
+  if (periodo.inicio && periodo.fim) {
+    const dur = periodo.fim.getTime() - periodo.inicio.getTime();
+    const fimAnt = new Date(periodo.inicio.getTime() - 1);
+    const iniAnt = new Date(fimAnt.getTime() - dur);
+    return { inicio: iniAnt, fim: fimAnt, label: `${iniAnt.toLocaleDateString('pt-BR')} até ${fimAnt.toLocaleDateString('pt-BR')}`, tipo: 'custom' };
+  }
+  return null;
+}
+
+// ── Preset de período reutilizável para outras telas (ex.: Faturas) ─────────
+// Preenche os inputs de data (ini/fim) conforme o tipo e dispara o callback.
+function aplicarPresetPeriodo(tipo, idIni, idFim, callback) {
+  const ini = document.getElementById(idIni);
+  const fim = document.getElementById(idFim);
+  if (!ini || !fim) return;
+  const toISO = d => d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : '';
+  if (!tipo || tipo === 'custom') { if (typeof callback === 'function') callback(); return; }
+  const per = calcularPeriodoPadrao(tipo);
+  ini.value = toISO(per.inicio);
+  fim.value = toISO(per.fim);
+  if (typeof callback === 'function') callback();
 }
 
 function dataDentroDashboardPeriodo(dateLike, periodo = getDashboardPeriodo()) {
@@ -5438,8 +5594,9 @@ function calcularLucroRedeDashboard(recargasPeriodo) {
   const descontosPosPago = recargasPeriodo.reduce((s, r) => s + descontoPosPagoDaRecarga(r), 0);
   const receitaLiquida = Math.max(0, bruto - descontosPosPago);
 
-  // Taxa Tupi = custo nosso (8%), calculada sobre a receita líquida real.
-  const taxaFinanceira = receitaLiquida * 0.08;
+  // Taxa Tupi = custo nosso, somada recarga a recarga (taxa da estação —
+  // multi-CNPJ, 8% ou 10% — sobre o bruto Tupi: valor cobrado + cupom).
+  const taxaFinanceira = somaTaxaTupi(recargasPeriodo);
   let custoEnergia = 0;
   let comissaoParceiro = 0;
   let mensalidadeParceiros = 0;
@@ -5548,23 +5705,53 @@ function updateDashboard() {
   const ticketMedio = recargasPeriodo.length ? financeiro.bruto / recargasPeriodo.length : 0;
 
   const setTxt = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+  // Despesas = Faturamento − Lucro da Rede (tudo que saiu entre um e outro:
+  // energia, taxa Tupi, comissões, descontos — menos mensalidades, que são receita).
+  const despesas = financeiro.bruto - financeiro.lucroRede;
   setTxt('stat-clientes-total', clientes.length);
-  setTxt('stat-clientes-pos', clientesPosComRecarga.size);
   setTxt('stat-kwh-total', formatKwhDash(totalKwh));
-  setTxt('stat-faturamento-bruto', formatMoneyDash(financeiro.bruto));
-  setTxt('stat-lucro-rede', formatMoneyDash(financeiro.lucroRede));
+  setTxt('stat-faturamento-bruto', moneyBR(financeiro.bruto));
+  setTxt('stat-despesas', moneyBR(despesas));
+  setTxt('stat-lucro-rede', moneyBR(financeiro.lucroRede));
 
-  const faturasValidas = faturasPeriodo.filter(f => !['cancelada', 'estornada', 'cancelada_sem_estorno'].includes(f.status));
-  const faturasPagas = faturasValidas.filter(f => !!f.pago || f.status === 'pago' || String(f.pixStatus || '').toUpperCase() === 'APPROVED');
-  const faturasAbertas = faturasValidas.filter(f => !f.pago && f.status !== 'pago' && String(f.pixStatus || '').toUpperCase() !== 'APPROVED');
-  const totalEmitidas = faturasValidas;
+  // ── Comparação com o período anterior equivalente ──
+  const periodoAnterior = getDashboardPeriodoAnterior(periodo);
+  const compRow = document.getElementById('dash-comparacao-row');
+  if (compRow) compRow.style.display = periodoAnterior ? '' : 'none';
+  if (periodoAnterior) {
+    const recAnt = getRecargasDashboard(periodoAnterior);
+    const finAnt = calcularLucroRedeDashboard(recAnt);
+    const kwhAnt = recAnt.reduce((s, r) => s + (Number(r.kwh || 0) || 0), 0);
+    const despAnt = finAnt.bruto - finAnt.lucroRede;
 
-  setTxt('stat-faturas-abertas', faturasAbertas.length);
-  setTxt('stat-faturas-abertas-valor', formatMoneyFull(faturasAbertas.reduce((s, f) => s + valorFatura(f), 0)));
-  setTxt('stat-faturas-pagas', faturasPagas.length);
-  setTxt('stat-faturas-pagas-valor', formatMoneyFull(faturasPagas.reduce((s, f) => s + valorFatura(f), 0)));
-  setTxt('stat-faturas-total', totalEmitidas.length);
-  setTxt('stat-faturas-total-valor', formatMoneyFull(totalEmitidas.reduce((s, f) => s + valorFatura(f), 0)));
+    const tituloComp = document.getElementById('dash-comparacao-titulo');
+    if (tituloComp) tituloComp.textContent = `Período anterior — ${periodoAnterior.label}`;
+
+    // % de variação do período ATUAL em relação ao anterior.
+    // maiorMelhor=false para despesas (aumento = ruim, fica vermelho).
+    const setDiff = (id, atual, anterior, maiorMelhor = true) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (!(Math.abs(anterior) > 0.004)) { el.textContent = '—'; el.style.color = 'var(--text3)'; return; }
+      const pct = ((atual - anterior) / Math.abs(anterior)) * 100;
+      const seta = pct >= 0 ? '▲' : '▼';
+      const positivo = maiorMelhor ? pct >= 0 : pct <= 0;
+      el.textContent = `${seta} ${Math.abs(pct).toFixed(1).replace('.', ',')}% vs atual`;
+      el.style.color = positivo ? 'var(--accent)' : 'var(--red)';
+    };
+    setTxt('stat-comp-kwh', formatKwhDash(kwhAnt));
+    setTxt('stat-comp-faturamento', moneyBR(finAnt.bruto));
+    setTxt('stat-comp-despesas', moneyBR(despAnt));
+    setTxt('stat-comp-lucro', moneyBR(finAnt.lucroRede));
+    setDiff('stat-comp-kwh-diff', totalKwh, kwhAnt, true);
+    setDiff('stat-comp-faturamento-diff', financeiro.bruto, finAnt.bruto, true);
+    setDiff('stat-comp-despesas-diff', despesas, despAnt, false);
+    setDiff('stat-comp-lucro-diff', financeiro.lucroRede, finAnt.lucroRede, true);
+    // Guardar para o PDF
+    window.__dashComparacao = { periodoAnterior, kwhAnt, finAnt, despAnt };
+  } else {
+    window.__dashComparacao = null;
+  }
 
   const ranking = new Map();
   recargasPeriodo.forEach(r => {
@@ -5638,13 +5825,95 @@ function updateDashboard() {
       <div class="parse-result-item"><span class="parse-key">Descontos pós-pagos</span><span class="parse-value">${formatMoneyFull(financeiro.descontosPosPago)}</span></div>
       <div class="parse-result-item"><span class="parse-key">Receita líquida real</span><span class="parse-value">${formatMoneyFull(financeiro.receitaLiquida)}</span></div>
       <div class="parse-result-item"><span class="parse-key">Custo energia estimado</span><span class="parse-value">${formatMoneyFull(financeiro.custoEnergia)}</span></div>
-      <div class="parse-result-item"><span class="parse-key">Taxa plataforma Tupi (8%)</span><span class="parse-value">${formatMoneyFull(financeiro.taxaFinanceira)}</span></div>
+      <div class="parse-result-item"><span class="parse-key">Taxa plataforma Tupi</span><span class="parse-value">${formatMoneyFull(financeiro.taxaFinanceira)}</span></div>
       <div class="parse-result-item"><span class="parse-key">Comissão parceiros</span><span class="parse-value">${formatMoneyFull(financeiro.comissaoParceiro)}</span></div>
       <div class="parse-result-item"><span class="parse-key">Mensalidades parceiros (receita)</span><span class="parse-value">${formatMoneyFull(financeiro.mensalidadeParceiros)}</span></div>
       <div class="parse-result-item"><span class="parse-key">Receita total da rede</span><span class="parse-value">${formatMoneyFull(financeiro.receitaTotalRede)}</span></div>
+      <div class="parse-result-item"><span class="parse-key">Despesas totais</span><span class="parse-value">${formatMoneyFull(financeiro.receitaTotalRede - financeiro.lucroRede)}</span></div>
       <div class="parse-result-item" style="border-color:rgba(0,229,160,0.35);background:var(--accent-dim)"><span class="parse-key" style="color:var(--accent)">Lucro da Rede</span><span class="parse-value" style="color:var(--accent)">${formatMoneyFull(financeiro.lucroRede)}</span></div>
     `;
   }
+
+  // Dados para o exportador de PDF do dashboard
+  window.__dashPDF = {
+    periodo, financeiro, totalKwh, despesas,
+    recargasQtd: recargasPeriodo.length,
+    ticketMedio,
+    clientesUnicos: clientesComRecarga.size
+  };
+}
+
+// ── 9) Exportar resumo do dashboard em PDF ──────────────────────────────────
+function exportarDashboardPDF() {
+  const d = window.__dashPDF;
+  if (!d) { toast('Abra o dashboard antes de exportar.', 'error'); return; }
+  const JsPDFCtor = window.jspdf?.jsPDF || window.jsPDF;
+  if (!JsPDFCtor) { toast('Biblioteca de PDF não carregada.', 'error'); return; }
+
+  const doc = new JsPDFCtor({ unit: 'pt', format: 'a4' });
+  const W = doc.internal.pageSize.getWidth();
+  const M = 48;
+  let y = 56;
+  const rede = getRedeConfig().nomeRede || 'EV Parking';
+  const money = v => 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+  doc.text(`Dashboard — ${rede}`, M, y); y += 20;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(110);
+  doc.text(`Período: ${d.periodo.label} · Gerado em ${new Date().toLocaleString('pt-BR')}`, M, y); y += 26;
+  doc.setTextColor(0);
+
+  const linha = (chave, valor, destaque = false) => {
+    if (destaque) { doc.setFont('helvetica', 'bold'); } else { doc.setFont('helvetica', 'normal'); }
+    doc.setFontSize(11);
+    doc.text(chave, M, y);
+    doc.text(String(valor), W - M, y, { align: 'right' });
+    y += 18;
+  };
+  const secao = (titulo) => {
+    y += 8;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
+    doc.text(titulo, M, y); y += 6;
+    doc.setDrawColor(200); doc.line(M, y, W - M, y); y += 14;
+  };
+
+  secao('Indicadores do período');
+  linha('Recargas no período', d.recargasQtd);
+  linha('Clientes únicos com consumo', d.clientesUnicos);
+  linha('Energia total', Number(d.totalKwh || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) + ' kWh');
+  linha('Ticket médio por recarga', money(d.ticketMedio));
+  linha('Faturamento', money(d.financeiro.bruto), true);
+  linha('Despesas', money(d.despesas), true);
+  linha('Lucro da Rede', money(d.financeiro.lucroRede), true);
+
+  secao('Detalhamento financeiro');
+  linha('Descontos pós-pagos', money(d.financeiro.descontosPosPago));
+  linha('Receita líquida real', money(d.financeiro.receitaLiquida));
+  linha('Custo energia estimado', money(d.financeiro.custoEnergia));
+  linha('Taxa plataforma Tupi', money(d.financeiro.taxaFinanceira));
+  linha('Comissão parceiros', money(d.financeiro.comissaoParceiro));
+  linha('Mensalidades parceiros (receita)', money(d.financeiro.mensalidadeParceiros));
+  linha('Receita total da rede', money(d.financeiro.receitaTotalRede));
+  linha('Despesas totais', money(d.financeiro.receitaTotalRede - d.financeiro.lucroRede));
+  linha('Lucro da Rede', money(d.financeiro.lucroRede), true);
+
+  const comp = window.__dashComparacao;
+  if (comp) {
+    const pct = (a, b) => Math.abs(b) > 0.004 ? ((a - b) / Math.abs(b) * 100) : null;
+    const fmtPct = v => v == null ? '—' : (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(1).replace('.', ',') + '%';
+    secao(`Comparação com o período anterior (${comp.periodoAnterior.label})`);
+    linha('Energia total (anterior)', Number(comp.kwhAnt || 0).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) + ' kWh  ·  ' + fmtPct(pct(d.totalKwh, comp.kwhAnt)));
+    linha('Faturamento (anterior)', money(comp.finAnt.bruto) + '  ·  ' + fmtPct(pct(d.financeiro.bruto, comp.finAnt.bruto)));
+    linha('Despesas (anterior)', money(comp.despAnt) + '  ·  ' + fmtPct(pct(d.despesas, comp.despAnt)));
+    linha('Lucro da Rede (anterior)', money(comp.finAnt.lucroRede) + '  ·  ' + fmtPct(pct(d.financeiro.lucroRede, comp.finAnt.lucroRede)));
+  }
+
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(130);
+  doc.text('Gerado automaticamente pelo EV Core.', M, doc.internal.pageSize.getHeight() - 32);
+
+  const nomeArq = `dashboard_${d.periodo.label.replace(/[^\w\d]+/g, '_').toLowerCase()}.pdf`;
+  doc.save(nomeArq);
+  toast('PDF do dashboard exportado!', 'success');
 }
 
 

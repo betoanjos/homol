@@ -5592,6 +5592,9 @@ function getFaturasDashboard(periodo) {
 function calcularLucroRedeDashboard(recargasPeriodo) {
   const bruto = recargasPeriodo.reduce((s, r) => s + valorReceitaDashboard(r), 0);
   const descontosPosPago = recargasPeriodo.reduce((s, r) => s + descontoPosPagoDaRecarga(r), 0);
+  // Cupons de desconto da Tupi (aplicados antes da cobrança — o faturamento já
+  // vem líquido deles; aqui somamos só para exibição em "Descontos totais").
+  const descontosCupons = recargasPeriodo.reduce((s, r) => s + (Number(r.valorCupom || 0) || 0), 0);
   const receitaLiquida = Math.max(0, bruto - descontosPosPago);
 
   // Taxa Tupi = custo nosso, somada recarga a recarga (taxa da estação —
@@ -5635,7 +5638,7 @@ function calcularLucroRedeDashboard(recargasPeriodo) {
   // Mensalidades de parceiros são receita da rede, não custo.
   const receitaTotalRede = receitaLiquida + mensalidadeParceiros;
   const lucroRede = receitaTotalRede - custoEnergia - taxaFinanceira - comissaoParceiro;
-  return { bruto, descontosPosPago, receitaLiquida, receitaTotalRede, custoEnergia, taxaFinanceira, comissaoParceiro, mensalidadeParceiros, lucroRede };
+  return { bruto, descontosPosPago, descontosCupons, receitaLiquida, receitaTotalRede, custoEnergia, taxaFinanceira, comissaoParceiro, mensalidadeParceiros, lucroRede };
 }
 
 function getClienteKeyDashboard(r) {
@@ -5816,21 +5819,26 @@ function updateDashboard() {
     }
   }
 
+  // % sobre a receita total da rede (base de margem/markup)
+  const pctReceita = v => financeiro.receitaTotalRede > 0.004
+    ? (v / financeiro.receitaTotalRede * 100).toFixed(1).replace('.', ',') + '%'
+    : '—';
+
   const resumo = document.getElementById('dash-resumo-periodo');
   if (resumo) {
     resumo.innerHTML = `
       <div class="parse-result-item"><span class="parse-key">Recargas no período</span><span class="parse-value">${recargasPeriodo.length}</span></div>
       <div class="parse-result-item"><span class="parse-key">Ticket médio por recarga</span><span class="parse-value">${formatMoneyFull(ticketMedio)}</span></div>
       <div class="parse-result-item"><span class="parse-key">Clientes únicos com consumo</span><span class="parse-value">${clientesComRecarga.size}</span></div>
-      <div class="parse-result-item"><span class="parse-key">Descontos pós-pagos</span><span class="parse-value">${formatMoneyFull(financeiro.descontosPosPago)}</span></div>
+      <div class="parse-result-item"><span class="parse-key">Descontos totais <span style="color:var(--text3);font-size:11px">(pós-pagos + cupons Tupi)</span></span><span class="parse-value">${formatMoneyFull(financeiro.descontosPosPago + financeiro.descontosCupons)}</span></div>
       <div class="parse-result-item"><span class="parse-key">Receita líquida real</span><span class="parse-value">${formatMoneyFull(financeiro.receitaLiquida)}</span></div>
       <div class="parse-result-item"><span class="parse-key">Custo energia estimado</span><span class="parse-value">${formatMoneyFull(financeiro.custoEnergia)}</span></div>
       <div class="parse-result-item"><span class="parse-key">Taxa plataforma Tupi</span><span class="parse-value">${formatMoneyFull(financeiro.taxaFinanceira)}</span></div>
       <div class="parse-result-item"><span class="parse-key">Comissão parceiros</span><span class="parse-value">${formatMoneyFull(financeiro.comissaoParceiro)}</span></div>
       <div class="parse-result-item"><span class="parse-key">Mensalidades parceiros (receita)</span><span class="parse-value">${formatMoneyFull(financeiro.mensalidadeParceiros)}</span></div>
-      <div class="parse-result-item"><span class="parse-key">Receita total da rede</span><span class="parse-value">${formatMoneyFull(financeiro.receitaTotalRede)}</span></div>
-      <div class="parse-result-item"><span class="parse-key">Despesas totais</span><span class="parse-value">${formatMoneyFull(financeiro.receitaTotalRede - financeiro.lucroRede)}</span></div>
-      <div class="parse-result-item" style="border-color:rgba(0,229,160,0.35);background:var(--accent-dim)"><span class="parse-key" style="color:var(--accent)">Lucro da Rede</span><span class="parse-value" style="color:var(--accent)">${formatMoneyFull(financeiro.lucroRede)}</span></div>
+      <div class="parse-result-item"><span class="parse-key">Receita total da rede</span><span class="parse-value">${formatMoneyFull(financeiro.receitaTotalRede)} <span style="color:var(--text3);font-size:11px">· 100%</span></span></div>
+      <div class="parse-result-item"><span class="parse-key">Despesas totais</span><span class="parse-value">${formatMoneyFull(financeiro.receitaTotalRede - financeiro.lucroRede)} <span style="color:var(--text3);font-size:11px">· ${pctReceita(financeiro.receitaTotalRede - financeiro.lucroRede)}</span></span></div>
+      <div class="parse-result-item" style="border-color:rgba(0,229,160,0.35);background:var(--accent-dim)"><span class="parse-key" style="color:var(--accent)">Lucro da Rede <span style="font-size:11px;opacity:0.8">(margem ${pctReceita(financeiro.lucroRede)})</span></span><span class="parse-value" style="color:var(--accent)">${formatMoneyFull(financeiro.lucroRede)}</span></div>
     `;
   }
 
@@ -5887,15 +5895,18 @@ function exportarDashboardPDF() {
   linha('Lucro da Rede', money(d.financeiro.lucroRede), true);
 
   secao('Detalhamento financeiro');
-  linha('Descontos pós-pagos', money(d.financeiro.descontosPosPago));
+  const pctRec = v => d.financeiro.receitaTotalRede > 0.004
+    ? ' (' + (v / d.financeiro.receitaTotalRede * 100).toFixed(1).replace('.', ',') + '%)'
+    : '';
+  linha('Descontos totais (pós-pagos + cupons Tupi)', money((d.financeiro.descontosPosPago || 0) + (d.financeiro.descontosCupons || 0)));
   linha('Receita líquida real', money(d.financeiro.receitaLiquida));
   linha('Custo energia estimado', money(d.financeiro.custoEnergia));
   linha('Taxa plataforma Tupi', money(d.financeiro.taxaFinanceira));
   linha('Comissão parceiros', money(d.financeiro.comissaoParceiro));
   linha('Mensalidades parceiros (receita)', money(d.financeiro.mensalidadeParceiros));
-  linha('Receita total da rede', money(d.financeiro.receitaTotalRede));
-  linha('Despesas totais', money(d.financeiro.receitaTotalRede - d.financeiro.lucroRede));
-  linha('Lucro da Rede', money(d.financeiro.lucroRede), true);
+  linha('Receita total da rede', money(d.financeiro.receitaTotalRede) + ' (100%)');
+  linha('Despesas totais', money(d.financeiro.receitaTotalRede - d.financeiro.lucroRede) + pctRec(d.financeiro.receitaTotalRede - d.financeiro.lucroRede));
+  linha('Lucro da Rede', money(d.financeiro.lucroRede) + pctRec(d.financeiro.lucroRede), true);
 
   const comp = window.__dashComparacao;
   if (comp) {

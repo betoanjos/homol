@@ -39,6 +39,23 @@ function smtpConfig() {
   return { host, port, user, pass, from, secure };
 }
 
+// Remove sufixos jurídicos do nome para exibição em e-mails (EV Parking Ltda → EV Parking).
+function nomeExibicao(nome) {
+  return String(nome || '')
+    .replace(/\s+(ltda\.?|me|mei|epp|eireli|s\.?\/?a\.?)\s*$/i, '')
+    .trim() || 'EV Parking';
+}
+
+// URL pública da logo para o cabeçalho do e-mail.
+// Prioridade: EMAIL_LOGO_URL > APP_BASE_URL + /logo-evparking.png >
+// domínio público do Railway (RAILWAY_PUBLIC_DOMAIN, preenchido automaticamente).
+function logoURL() {
+  if (process.env.EMAIL_LOGO_URL) return process.env.EMAIL_LOGO_URL;
+  const base = process.env.APP_BASE_URL
+    || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
+  return base ? `${base.replace(/\/+$/, '')}/logo-evparking.png` : null;
+}
+
 function brevoConfig() {
   return {
     apiKey: process.env.BREVO_API_KEY || '',
@@ -92,16 +109,16 @@ function parseNascimento(str) {
   return null;
 }
 
-function montarLinkWhatsApp(nomeCliente) {
+function montarLinkWhatsApp(nomeCliente, emailCliente) {
   const numero = String(process.env.WHATSAPP_NUMERO || '').replace(/\D/g, '');
   if (!numero) return null;
   const hoje = hojeLocal();
   const dataTxt = `${String(hoje.dia).padStart(2, '0')}/${String(hoje.mes).padStart(2, '0')}/${hoje.ano}`;
-  const msg = `Olá! Hoje é meu aniversário 🎂 (${dataTxt}) e recebi o e-mail da recarga grátis de presente. Meu nome é ${nomeCliente}. Como faço para resgatar?`;
+  const msg = `Olá! Hoje é meu aniversário (${dataTxt}) e recebi o e-mail da recarga grátis de presente. Meu nome é ${nomeCliente}, e-mail: ${emailCliente || 'não informado'}. Como faço para resgatar?`;
   return `https://wa.me/${numero}?text=${encodeURIComponent(msg)}`;
 }
 
-function montarEmailHTML({ nome, nomeRede, linkWhats }) {
+function montarEmailHTML({ nome, nomeRede, linkWhats, logo }) {
   const primeiroNome = String(nome || '').trim().split(/\s+/)[0] || 'Cliente';
   const botao = linkWhats
     ? `<a href="${linkWhats}" style="display:inline-block;background:#00e5a0;color:#04150f;font-weight:700;font-size:16px;padding:14px 28px;border-radius:10px;text-decoration:none">🎁 Resgatar minha recarga grátis</a>
@@ -113,9 +130,10 @@ function montarEmailHTML({ nome, nomeRede, linkWhats }) {
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f2f5f9;padding:24px 0">
     <tr><td align="center">
       <table role="presentation" width="560" cellspacing="0" cellpadding="0" style="background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 4px 18px rgba(20,40,60,0.08)">
-        <tr><td style="background:#04150f;padding:26px 32px" align="center">
-          <div style="font-size:26px">⚡🎉</div>
-          <div style="color:#00e5a0;font-size:20px;font-weight:800;margin-top:6px">${nomeRede}</div>
+        <tr><td style="background:#ffffff;padding:26px 32px;border-bottom:3px solid #00e5a0" align="center">
+          ${logo
+            ? `<img src="${logo}" alt="${nomeRede}" width="220" style="display:block;max-width:220px;height:auto;margin:0 auto">`
+            : `<div style="font-size:26px">⚡🎉</div><div style="color:#0a6ed1;font-size:20px;font-weight:800;margin-top:6px">${nomeRede}</div>`}
         </td></tr>
         <tr><td style="padding:34px 36px" align="center">
           <h1 style="margin:0 0 8px;font-size:24px;color:#101820">Feliz aniversário, ${primeiroNome}! 🎂</h1>
@@ -164,18 +182,19 @@ async function enviarViaBrevo({ para, nome, assunto, html, nomeRede }) {
 }
 
 async function enviarEmail({ para, nome, nomeRede }) {
-  const linkWhats = montarLinkWhatsApp(nome);
+  const nomeRedeExib = nomeExibicao(nomeRede);
+  const linkWhats = montarLinkWhatsApp(nome, para);
   const assunto = `🎂 Feliz aniversário, ${String(nome || '').split(/\s+/)[0]}! Sua recarga grátis chegou`;
-  const html = montarEmailHTML({ nome, nomeRede, linkWhats });
+  const html = montarEmailHTML({ nome, nomeRede: nomeRedeExib, linkWhats, logo: logoURL() });
 
   if (emailProvider() === 'brevo') {
-    await enviarViaBrevo({ para, nome, assunto, html, nomeRede });
+    await enviarViaBrevo({ para, nome, assunto, html, nomeRede: nomeRedeExib });
     return;
   }
   const transporter = await criarTransporter();
   const { from } = smtpConfig();
   await transporter.sendMail({
-    from: `"${nomeRede}" <${from}>`,
+    from: `"${nomeRedeExib}" <${from}>`,
     to: para,
     subject: assunto,
     html

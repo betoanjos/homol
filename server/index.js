@@ -39,7 +39,7 @@ let ultimoBackup = null;
 
 const SESSION_COOKIE = 'evcore_session';
 const SESSION_MAX_AGE_HOURS = 8;
-const PUBLIC_PATHS = new Set(['/login', '/api/login', '/api/logout', '/api/me', '/api/health']);
+const PUBLIC_PATHS = new Set(['/login', '/api/login', '/api/logout', '/api/me', '/api/health', '/logo-evparking.png']);
 
 function parseCookies(req) {
   const header = req.headers.cookie || '';

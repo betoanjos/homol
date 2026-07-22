@@ -3,12 +3,23 @@
 // nascimento cadastrada e envia um e-mail HTML de parabéns com um botão
 // "Resgatar recarga grátis" que abre o WhatsApp da rede com mensagem pronta.
 //
-// Variáveis de ambiente:
-//   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS  → servidor de e-mail
-//   SMTP_SECURE=true|false (padrão: true se porta 465)
-//   SMTP_FROM              → remetente (padrão: SMTP_USER)
-//   WHATSAPP_NUMERO        → número com DDI, só dígitos (ex.: 5547999998888)
-//   ANIVERSARIO_HORA       → hora local de envio, 0-23 (padrão: 9)
+// Variáveis de ambiente (dois modos de envio — configure UM deles):
+//
+//   MODO 1 — API HTTPS (recomendado no Railway Free/Hobby, que bloqueia SMTP):
+//     BREVO_API_KEY        → chave da API do Brevo (plano grátis: 300 e-mails/dia)
+//     EMAIL_FROM           → remetente verificado no Brevo (ex.: contato@evparking.com.br)
+//     EMAIL_FROM_NOME      → nome do remetente (padrão: nome da rede)
+//
+//   MODO 2 — SMTP (requer Railway Pro ou host sem bloqueio de portas 465/587):
+//     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS
+//     SMTP_SECURE=true|false (padrão: true se porta 465)
+//     SMTP_FROM             → remetente (padrão: SMTP_USER)
+//
+//   Comuns:
+//     WHATSAPP_NUMERO      → número com DDI, só dígitos (ex.: 5547999998888)
+//     ANIVERSARIO_HORA     → hora local de envio, 0-23 (padrão: 9)
+//
+// Se BREVO_API_KEY estiver definida, ela tem prioridade sobre o SMTP.
 //
 // O controle de envio fica na tabela aniversario_envios (1 envio por cliente/ano).
 
@@ -28,9 +39,23 @@ function smtpConfig() {
   return { host, port, user, pass, from, secure };
 }
 
-export function aniversariosConfigurado() {
+function brevoConfig() {
+  return {
+    apiKey: process.env.BREVO_API_KEY || '',
+    from: process.env.EMAIL_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || '',
+    fromNome: process.env.EMAIL_FROM_NOME || ''
+  };
+}
+
+export function emailProvider() {
+  if (brevoConfig().apiKey) return 'brevo';
   const { host, user, pass } = smtpConfig();
-  return Boolean(host && user && pass);
+  if (host && user && pass) return 'smtp';
+  return null;
+}
+
+export function aniversariosConfigurado() {
+  return emailProvider() !== null;
 }
 
 export async function initAniversariosDB() {
@@ -113,18 +138,47 @@ function montarEmailHTML({ nome, nomeRede, linkWhats }) {
 async function criarTransporter() {
   const nodemailer = (await import('nodemailer')).default;
   const { host, port, user, pass, secure } = smtpConfig();
-  return nodemailer.createTransport({ host, port, secure, auth: { user, pass } });
+  return nodemailer.createTransport({ host, port, secure, auth: { user, pass }, connectionTimeout: 15000 });
+}
+
+// Envio via API HTTPS do Brevo (porta 443 — funciona em qualquer plano do Railway).
+async function enviarViaBrevo({ para, nome, assunto, html, nomeRede }) {
+  const { apiKey, from, fromNome } = brevoConfig();
+  if (!from) throw new Error('EMAIL_FROM não configurado (remetente verificado no Brevo).');
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'api-key': apiKey, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({
+      sender: { email: from, name: fromNome || nomeRede },
+      to: [{ email: para, name: nome }],
+      subject: assunto,
+      htmlContent: html
+    })
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    let msg = `Brevo HTTP ${res.status}`;
+    try { msg += `: ${JSON.parse(body)?.message || body}`; } catch { if (body) msg += `: ${body}`; }
+    throw new Error(msg);
+  }
 }
 
 async function enviarEmail({ para, nome, nomeRede }) {
+  const linkWhats = montarLinkWhatsApp(nome);
+  const assunto = `🎂 Feliz aniversário, ${String(nome || '').split(/\s+/)[0]}! Sua recarga grátis chegou`;
+  const html = montarEmailHTML({ nome, nomeRede, linkWhats });
+
+  if (emailProvider() === 'brevo') {
+    await enviarViaBrevo({ para, nome, assunto, html, nomeRede });
+    return;
+  }
   const transporter = await criarTransporter();
   const { from } = smtpConfig();
-  const linkWhats = montarLinkWhatsApp(nome);
   await transporter.sendMail({
     from: `"${nomeRede}" <${from}>`,
     to: para,
-    subject: `🎂 Feliz aniversário, ${String(nome || '').split(/\s+/)[0]}! Sua recarga grátis chegou`,
-    html: montarEmailHTML({ nome, nomeRede, linkWhats })
+    subject: assunto,
+    html
   });
 }
 
@@ -138,7 +192,7 @@ async function carregarClientes() {
 // Verifica e envia os e-mails do dia. Retorna um resumo.
 export async function processarAniversarios({ force = false } = {}) {
   if (!aniversariosConfigurado()) {
-    return { ok: false, motivo: 'SMTP não configurado (defina SMTP_HOST, SMTP_USER e SMTP_PASS).' };
+    return { ok: false, motivo: 'E-mail não configurado (defina BREVO_API_KEY + EMAIL_FROM, ou SMTP_HOST/USER/PASS).' };
   }
   const hoje = hojeLocal();
   const { clientes, nomeRede } = await carregarClientes();
@@ -177,7 +231,7 @@ export async function processarAniversarios({ force = false } = {}) {
 
 // Envio de teste para validar o SMTP e o layout do e-mail.
 export async function enviarTesteAniversario(emailDestino, nome = 'Cliente Teste') {
-  if (!aniversariosConfigurado()) throw new Error('SMTP não configurado (defina SMTP_HOST, SMTP_USER e SMTP_PASS).');
+  if (!aniversariosConfigurado()) throw new Error('E-mail não configurado (defina BREVO_API_KEY + EMAIL_FROM, ou SMTP_HOST/USER/PASS).');
   const { nomeRede } = await carregarClientes();
   await enviarEmail({ para: emailDestino, nome, nomeRede });
   return { ok: true, para: emailDestino };
@@ -195,6 +249,7 @@ export async function statusAniversarios() {
     'SELECT COUNT(*)::int AS n FROM aniversario_envios WHERE ano = $1', [hoje.ano]
   );
   return {
+    provedorEmail: emailProvider(),
     smtpConfigurado: aniversariosConfigurado(),
     whatsappConfigurado: Boolean(String(process.env.WHATSAPP_NUMERO || '').replace(/\D/g, '')),
     horaEnvio: Number(process.env.ANIVERSARIO_HORA || 9),
@@ -206,7 +261,7 @@ export async function statusAniversarios() {
 
 export function iniciarAgendadorAniversarios() {
   if (!aniversariosConfigurado()) {
-    console.warn('Agendador de aniversários não iniciado: SMTP não configurado.');
+    console.warn('Agendador de aniversários não iniciado: e-mail não configurado (BREVO_API_KEY ou SMTP).');
     return;
   }
   const horaAlvo = Math.min(23, Math.max(0, Number(process.env.ANIVERSARIO_HORA || 9)));
@@ -222,5 +277,5 @@ export function iniciarAgendadorAniversarios() {
   };
   setTimeout(tick, 30000); // primeira checagem logo após o boot
   setInterval(tick, 60 * 60 * 1000);
-  console.log(`Agendador de aniversários ativo (envio a partir das ${horaAlvo}h, horário de São Paulo).`);
+  console.log(`Agendador de aniversários ativo via ${emailProvider()} (envio a partir das ${horaAlvo}h, horário de São Paulo).`);
 }

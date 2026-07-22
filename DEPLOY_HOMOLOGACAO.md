@@ -50,9 +50,28 @@ Use como base o arquivo `.env.staging.example`. Os pontos críticos:
 Para o e-mail automático de aniversário (opcional — sem essas variáveis o
 recurso fica desligado, sem afetar o resto do sistema):
 
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` → servidor de e-mail
-  (ex.: Gmail com senha de app, Brevo, Resend SMTP, etc.).
+> ⚠️ **Importante:** o Railway BLOQUEIA SMTP (portas 465/587) nos planos
+> Free, Trial e Hobby — só o plano Pro tem SMTP liberado. Nos planos
+> bloqueados, use o modo API abaixo (porta 443, nunca bloqueada).
+
+**Modo API — Brevo (recomendado, funciona em qualquer plano):**
+1. Crie uma conta grátis em brevo.com (300 e-mails/dia no plano free).
+2. Em Settings → Senders, cadastre e verifique o remetente
+   (ex.: `contato@evparking.com.br`).
+3. Em Settings → SMTP & API → API Keys, gere uma chave.
+4. Configure no Railway:
+   - `BREVO_API_KEY` → a chave gerada
+   - `EMAIL_FROM` → o remetente verificado (ex.: `contato@evparking.com.br`)
+   - `EMAIL_FROM_NOME` → nome exibido (opcional; padrão: nome da rede)
+
+**Modo SMTP (requer Railway Pro):**
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`
+  (ex.: `smtp.hostinger.com`, porta 465, com `SMTP_SECURE=true`).
 - `SMTP_FROM` → remetente exibido (padrão: o próprio SMTP_USER).
+
+Se `BREVO_API_KEY` estiver presente, ela tem prioridade sobre o SMTP.
+
+**Comuns aos dois modos:**
 - `WHATSAPP_NUMERO` → número do WhatsApp da rede com DDI, só dígitos
   (ex.: `5547999998888`) — destino do botão "Resgatar recarga grátis".
 - `ANIVERSARIO_HORA` → hora local (0-23) do envio diário (padrão: 9).

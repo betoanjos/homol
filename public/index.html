@@ -791,7 +791,16 @@
             <span class="search-icon">🔍</span>
             <input type="text" placeholder="Buscar clientes..." id="search-clientes" oninput="renderClientes()">
           </div>
-          <span id="clientes-count" style="font-size:13px;color:var(--text2)"></span>
+          <select id="filtro-grupo-clientes" onchange="renderClientes()" style="min-width:150px">
+            <option value="">Todos os grupos</option>
+          </select>
+          <select id="ordem-clientes" onchange="renderClientes()" style="min-width:150px">
+            <option value="nome">Ordenar: Nome</option>
+            <option value="consumo">Ordenar: Maior consumo</option>
+            <option value="ultima">Ordenar: Última recarga</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" onclick="openModalGrupos()">⚙️ Grupos</button>
+          <span id="clientes-count" style="font-size:13px;color:var(--text2);margin-left:auto"></span>
         </div>
         <div class="table-wrap">
           <table>
@@ -800,9 +809,9 @@
                 <th>Cliente</th>
                 <th>RFID / Código</th>
                 <th>Placa</th>
-                <th>Tipo</th>
-                <th>Vencimento / Saldo</th>
-                <th>Status</th>
+                <th>Grupo</th>
+                <th>Consumo Total</th>
+                <th>Última Recarga</th>
                 <th></th>
               </tr>
             </thead>
@@ -1297,6 +1306,16 @@
         <label>Chave PIX do Cliente <span style="color:var(--text3);font-weight:400">(para receber reembolsos)</span></label>
         <input type="text" id="c-pix" placeholder="CPF, e-mail ou telefone do cliente">
       </div>
+      <div class="form-group">
+        <label>Data de Nascimento <span style="color:var(--text3);font-weight:400">(para e-mail de aniversário)</span></label>
+        <input type="date" id="c-dataNascimento">
+      </div>
+      <div class="form-group">
+        <label>Grupo</label>
+        <select id="c-grupoId">
+          <option value="">— sem grupo —</option>
+        </select>
+      </div>
       <div class="form-group full">
         <label>Endereço Completo</label>
         <input type="text" id="c-endereco" placeholder="Rua, número, bairro, cidade - UF">
@@ -1305,6 +1324,25 @@
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeModal('modal-cliente')">Cancelar</button>
       <button class="btn btn-primary" onclick="salvarCliente()">💾 Salvar Cliente</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: GRUPOS DE CLIENTES -->
+<div class="modal-overlay" id="modal-grupos">
+  <div class="modal" style="max-width:480px">
+    <button class="modal-close" onclick="closeModal('modal-grupos')">✕</button>
+    <div class="modal-title">Grupos de Clientes</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:14px">
+      Classifique seus clientes em grupos (ex.: Motoristas APP, Bonificados, Diretoria) para criar promoções exclusivas e acompanhar o consumo por perfil. Clientes com 🎟️ já usaram cupons e ainda não foram classificados.
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <input type="text" id="grupo-novo-nome" placeholder="Nome do novo grupo" style="flex:1" onkeydown="if(event.key==='Enter')criarGrupo()">
+      <button class="btn btn-primary btn-sm" onclick="criarGrupo()">+ Criar</button>
+    </div>
+    <div id="grupos-lista" style="display:flex;flex-direction:column;gap:8px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal('modal-grupos')">Fechar</button>
     </div>
   </div>
 </div>

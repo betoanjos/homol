@@ -11,6 +11,7 @@ import { promisify } from 'util';
 import pool from './db.js';
 import { initTupiDB, syncTupi, getSyncStatus, listRecargas, iniciarSyncAgendado } from './tupiSync.js';
 import { fetchSessionUserData, tupiConfig } from './tupi.js';
+import { initAniversariosDB, processarAniversarios, enviarTesteAniversario, statusAniversarios, iniciarAgendadorAniversarios } from './aniversarios.js';
 
 const app = express();
 app.use(cors());
@@ -241,6 +242,7 @@ async function initParceiroArquivosDB() {
 await initStateDB();
 await initAuthDB();
 await initTupiDB();
+await initAniversariosDB();
 await initParceiroArquivosDB();
 
 app.get('/login', async (req, res) => {
@@ -313,6 +315,28 @@ app.post('/api/state', async (req, res) => {
   }
 });
 
+
+// ===== Aniversários (e-mail automático com recarga grátis) =====
+
+app.get('/api/aniversarios/status', async (_req, res) => {
+  try { res.json(await statusAniversarios()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Dispara manualmente a verificação/envio do dia (force=1 reenvia mesmo se já enviado).
+app.post('/api/aniversarios/rodar', async (req, res) => {
+  try { res.json(await processarAniversarios({ force: req.query.force === '1' })); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Envia um e-mail de teste para validar SMTP e layout: { "email": "voce@..." }
+app.post('/api/aniversarios/teste', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim();
+    if (!email) return res.status(400).json({ error: 'Informe o e-mail de destino.' });
+    res.json(await enviarTesteAniversario(email, req.body?.nome || 'Cliente Teste'));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ===== Integração Tupi (OCPI) =====
 
@@ -915,6 +939,7 @@ app.post('/api/webhooks/mercadopago', async (req, res) => {
 
 iniciarBackupAutomatico();
 iniciarSyncAgendado();
+iniciarAgendadorAniversarios();
 
 app.listen(PORT, () => {
   console.log(`EV Parking Pix rodando em http://localhost:${PORT}`);

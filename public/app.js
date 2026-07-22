@@ -7,6 +7,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs
 // Fonte única = Postgres/Railway. Nada de dados de negócio no localStorage.
 // Estas variáveis começam vazias e são preenchidas pelo loadState() a partir do servidor.
 let clientes = [];
+let gruposClientes = []; // grupos editáveis de clientes (Motoristas APP, Bonificados, Diretoria...)
 let faturas = [];
 let recargas = [];
 let parceiros = [];
@@ -48,6 +49,15 @@ async function loadState() {
     if (!res.ok) throw new Error('Falha ao carregar dados do servidor');
     const data = await res.json();
     clientes = data.clientes || clientes || [];
+    gruposClientes = Array.isArray(data.gruposClientes) ? data.gruposClientes : [];
+    // Grupos iniciais sugeridos (só na primeira vez, editáveis depois)
+    if (!gruposClientes.length) {
+      gruposClientes = [
+        { id: 'grp_app',    nome: 'Motoristas APP', cor: 'blue' },
+        { id: 'grp_bonif',  nome: 'Bonificados',    cor: 'yellow' },
+        { id: 'grp_dir',    nome: 'Diretoria',      cor: 'red' }
+      ];
+    }
     faturas = data.faturas || faturas || [];
     recargas = data.recargas || recargas || [];
     parceiros = data.parceiros || parceiros || [];
@@ -99,7 +109,7 @@ function saveState() {
     if (typeof toast === 'function') toast('Dados ainda não carregados do servidor. Recarregue a página antes de salvar.', 'error');
     return Promise.resolve();
   }
-  const state = { clientes, faturas, recargas, parceiros, estacoes, contasReceber, recebiveisManuais, fluxoCaixa, configFin: _getConfigFin(), configuracoesRede };
+  const state = { clientes, gruposClientes, faturas, recargas, parceiros, estacoes, contasReceber, recebiveisManuais, fluxoCaixa, configFin: _getConfigFin(), configuracoesRede };
   return fetch(STATE_API, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -692,7 +702,13 @@ function openModalCliente(id = null) {
   const modal = document.getElementById('modal-cliente');
   document.getElementById('modal-cliente-title').textContent = id ? 'Editar Cliente' : 'Novo Cliente';
   
-  const fields = ['nome','doc','email','telefone','rfid','placa','veiculo','desconto','vencimento','tipo','saldo','pix','endereco'];
+  const fields = ['nome','doc','email','telefone','rfid','placa','veiculo','desconto','vencimento','tipo','saldo','pix','endereco','dataNascimento','grupoId'];
+  // Popular o select de grupos antes de preencher valores
+  const selGrupo = document.getElementById('c-grupoId');
+  if (selGrupo) {
+    selGrupo.innerHTML = '<option value="">— sem grupo —</option>'
+      + gruposClientes.map(g => `<option value="${g.id}">${escapeHtml(g.nome)}</option>`).join('');
+  }
   if (id) {
     const c = clientes.find(x => x.id === id);
     fields.forEach(f => document.getElementById('c-' + f).value = c[f] || '');
@@ -723,6 +739,8 @@ function salvarCliente() {
     tipo: get('tipo') || 'avulso',
     saldo: parseFloat(get('saldo')) || 0,
     pix: get('pix'), endereco: get('endereco'),
+    dataNascimento: get('dataNascimento') || '',
+    grupoId: get('grupoId') || '',
     criadoEm: editingClienteId ? clientes.find(x=>x.id===editingClienteId)?.criadoEm : new Date().toISOString()
   };
   if (editingClienteId) {
@@ -746,43 +764,196 @@ function deletarCliente(id) {
   toast('Cliente removido.', 'success');
 }
 
+// ─── Grupos de clientes ──────────────────────────────────────────────────────
+const CORES_GRUPO = ['green', 'blue', 'yellow', 'red'];
+
+function getGrupoCliente(c) {
+  return c?.grupoId ? gruposClientes.find(g => g.id === c.grupoId) || null : null;
+}
+
+function badgeGrupo(c) {
+  const g = getGrupoCliente(c);
+  if (!g) return '<span style="font-size:11px;color:var(--text3)">—</span>';
+  return `<span class="badge badge-${g.cor || 'green'}">${escapeHtml(g.nome)}</span>`;
+}
+
+function openModalGrupos() {
+  renderListaGrupos();
+  document.getElementById('modal-grupos').classList.add('open');
+}
+
+function renderListaGrupos() {
+  const wrap = document.getElementById('grupos-lista');
+  if (!wrap) return;
+  if (!gruposClientes.length) {
+    wrap.innerHTML = '<div style="font-size:13px;color:var(--text3);padding:12px 0">Nenhum grupo criado ainda.</div>';
+    return;
+  }
+  wrap.innerHTML = gruposClientes.map(g => {
+    const qtd = clientes.filter(c => c.grupoId === g.id).length;
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px">
+        <span class="badge badge-${g.cor || 'green'}">${escapeHtml(g.nome)}</span>
+        <span style="font-size:11px;color:var(--text3);flex:1">${qtd} cliente(s)</span>
+        <button class="btn btn-secondary btn-sm" onclick="renomearGrupo('${g.id}')" title="Renomear">✏️</button>
+        <button class="btn btn-secondary btn-sm" onclick="trocarCorGrupo('${g.id}')" title="Trocar cor">🎨</button>
+        <button class="btn btn-danger btn-sm" onclick="excluirGrupo('${g.id}')" title="Excluir">🗑️</button>
+      </div>`;
+  }).join('');
+}
+
+function criarGrupo() {
+  const input = document.getElementById('grupo-novo-nome');
+  const nome = (input?.value || '').trim();
+  if (!nome) { toast('Informe o nome do grupo.', 'error'); return; }
+  if (gruposClientes.some(g => g.nome.toLowerCase() === nome.toLowerCase())) {
+    toast('Já existe um grupo com esse nome.', 'error'); return;
+  }
+  const cor = CORES_GRUPO[gruposClientes.length % CORES_GRUPO.length];
+  gruposClientes.push({ id: 'grp_' + Date.now(), nome, cor });
+  input.value = '';
+  saveState(); renderListaGrupos(); renderClientes();
+  toast('Grupo criado!', 'success');
+}
+
+function renomearGrupo(id) {
+  const g = gruposClientes.find(x => x.id === id);
+  if (!g) return;
+  const nome = prompt('Novo nome do grupo:', g.nome);
+  if (!nome || !nome.trim()) return;
+  g.nome = nome.trim();
+  saveState(); renderListaGrupos(); renderClientes();
+}
+
+function trocarCorGrupo(id) {
+  const g = gruposClientes.find(x => x.id === id);
+  if (!g) return;
+  const idx = CORES_GRUPO.indexOf(g.cor || 'green');
+  g.cor = CORES_GRUPO[(idx + 1) % CORES_GRUPO.length];
+  saveState(); renderListaGrupos(); renderClientes();
+}
+
+function excluirGrupo(id) {
+  const qtd = clientes.filter(c => c.grupoId === id).length;
+  if (!confirm(`Excluir este grupo?${qtd ? ` ${qtd} cliente(s) ficarão sem grupo.` : ''}`)) return;
+  gruposClientes = gruposClientes.filter(g => g.id !== id);
+  clientes.forEach(c => { if (c.grupoId === id) c.grupoId = ''; });
+  saveState(); renderListaGrupos(); renderClientes();
+  toast('Grupo excluído.', 'success');
+}
+
+// ─── Consumo consolidado por cliente (para a tabela e rankings) ─────────────
+// Vincula recargas ao cliente por clienteId, RFID ou e-mail.
+function consumoDosClientes() {
+  const porEmail = new Map();
+  const porRfid = new Map();
+  clientes.forEach(c => {
+    if (c.email) porEmail.set(String(c.email).toLowerCase().trim(), c.id);
+    if (c.rfid) porRfid.set(normalizarRFID(c.rfid), c.id);
+  });
+  const mapa = new Map(); // clienteId -> { valor, kwh, recargas, cupons, ultima }
+  recargas.forEach(r => {
+    if (!r || recargaOculta(r)) return;
+    let cid = r.clienteId || null;
+    if (!cid && r.rfid) cid = porRfid.get(normalizarRFID(r.rfid)) || null;
+    if (!cid && r.email) cid = porEmail.get(String(r.email).toLowerCase().trim()) || null;
+    if (!cid) return;
+    const m = mapa.get(cid) || { valor: 0, kwh: 0, recargas: 0, cupons: 0, ultima: null };
+    m.valor += Number(r.cobranca ?? r.total ?? 0) || 0;
+    m.kwh += Number(r.kwh || 0) || 0;
+    m.recargas += 1;
+    m.cupons += Number(r.valorCupom || 0) || 0;
+    const d = dataParaDate(r);
+    if (d && (!m.ultima || d > m.ultima)) m.ultima = d;
+    mapa.set(cid, m);
+  });
+  return mapa;
+}
+
+function fmtUltimaRecarga(d) {
+  if (!d) return '<span style="color:var(--text3)">nunca</span>';
+  const dias = Math.floor((Date.now() - d.getTime()) / 86400000);
+  const rel = dias === 0 ? 'hoje' : dias === 1 ? 'ontem' : `há ${dias} dias`;
+  return `${d.toLocaleDateString('pt-BR')} <span style="color:var(--text3)">· ${rel}</span>`;
+}
+
+function aniversarioHoje(c) {
+  const s = String(c?.dataNascimento || '');
+  const m = s.match(/^\d{4}-(\d{2})-(\d{2})/);
+  if (!m) return false;
+  const hoje = new Date();
+  return Number(m[2]) === hoje.getDate() && Number(m[1]) === hoje.getMonth() + 1;
+}
+
 function renderClientes() {
   const q = (document.getElementById('search-clientes')?.value || '').toLowerCase();
-  const filtered = clientes.filter(c =>
+  const grupoFiltro = document.getElementById('filtro-grupo-clientes')?.value || '';
+  const ordem = document.getElementById('ordem-clientes')?.value || 'nome';
+
+  // Repopular o filtro de grupos preservando a seleção
+  const selFiltro = document.getElementById('filtro-grupo-clientes');
+  if (selFiltro) {
+    const atual = selFiltro.value;
+    selFiltro.innerHTML = '<option value="">Todos os grupos</option>'
+      + '<option value="__sem">Sem grupo</option>'
+      + gruposClientes.map(g => `<option value="${g.id}">${escapeHtml(g.nome)}</option>`).join('');
+    selFiltro.value = atual;
+  }
+
+  const consumo = consumoDosClientes();
+  let filtered = clientes.filter(c =>
     String(c.nome || '').toLowerCase().includes(q) ||
     String(c.rfid || '').toLowerCase().includes(q) ||
-    String(c.placa || '').toLowerCase().includes(q)
+    String(c.placa || '').toLowerCase().includes(q) ||
+    String(c.email || '').toLowerCase().includes(q)
   );
+  if (grupoFiltro === '__sem') filtered = filtered.filter(c => !c.grupoId);
+  else if (grupoFiltro) filtered = filtered.filter(c => c.grupoId === grupoFiltro);
+
+  const consumoDe = c => consumo.get(c.id) || { valor: 0, kwh: 0, recargas: 0, cupons: 0, ultima: null };
+  if (ordem === 'consumo') filtered.sort((a, b) => consumoDe(b).valor - consumoDe(a).valor);
+  else if (ordem === 'ultima') filtered.sort((a, b) => (consumoDe(b).ultima?.getTime() || 0) - (consumoDe(a).ultima?.getTime() || 0));
+  else filtered.sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
+
   document.getElementById('clientes-count').textContent = `${filtered.length} cliente(s)`;
   const tbody = document.getElementById('tabela-clientes');
   if (!filtered.length) {
     tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">👤</div><div class="empty-title">Nenhum cliente encontrado</div></div></td></tr>`;
     return;
   }
-  tbody.innerHTML = filtered.map(c => `
+  tbody.innerHTML = filtered.map(c => {
+    const m = consumoDe(c);
+    // 🎟️ = cliente já usou cupom mas ainda não foi classificado em grupo (sugestão)
+    const marcadorCupom = (m.cupons > 0 && !c.grupoId)
+      ? `<span title="Já usou R$ ${m.cupons.toFixed(2).replace('.', ',')} em cupons — classifique em um grupo" style="cursor:help">🎟️</span>` : '';
+    const marcadorNiver = aniversarioHoje(c) ? '<span title="Aniversário hoje!">🎂</span>' : '';
+    return `
     <tr>
       <td>
         <div style="display:flex;align-items:center;gap:10px">
-          <div class="avatar avatar-green">${c.nome.charAt(0)}</div>
+          <div class="avatar avatar-green">${(c.nome || '?').charAt(0)}</div>
           <div>
-            <div style="font-weight:600;font-size:13px">${c.nome}</div>
-            <div style="font-size:11px;color:var(--text2)">${c.email}</div>
+            <div style="font-weight:600;font-size:13px">${escapeHtml(c.nome || '')} ${marcadorNiver} ${marcadorCupom}</div>
+            <div style="font-size:11px;color:var(--text2)">${escapeHtml(c.email || '')}</div>
           </div>
         </div>
       </td>
-      <td><span class="mono" style="font-size:12px;color:var(--accent)">${c.rfid}</span></td>
-      <td><span class="mono" style="font-size:12px">${c.placa}</span></td>
-      <td>${getTipoCobrancaBadge(c.tipo)}</td>
-      <td><span style="font-size:12px">Dia ${c.vencimento}${c.tipo === 'pre' ? ' · Saldo R$ ' + (c.saldo || 0).toFixed(2).replace('.',',') : ''}</span></td>
-      <td><span class="badge badge-green">● Ativo</span></td>
+      <td><span class="mono" style="font-size:12px;color:var(--accent)">${escapeHtml(c.rfid || '')}</span></td>
+      <td><span class="mono" style="font-size:12px">${escapeHtml(c.placa || '')}</span></td>
+      <td>${badgeGrupo(c)}</td>
+      <td>
+        <div style="font-weight:700;font-size:13px">${moneyBR(m.valor)}</div>
+        <div style="font-size:11px;color:var(--text3)">${m.kwh.toFixed(1).replace('.', ',')} kWh · ${m.recargas} recarga(s)${m.cupons > 0 ? ' · 🎟️ ' + moneyBR(m.cupons) : ''}</div>
+      </td>
+      <td><span style="font-size:12px">${fmtUltimaRecarga(m.ultima)}</span></td>
       <td>
         <div style="display:flex;gap:6px">
           <button class="btn btn-secondary btn-sm" onclick="openModalCliente('${c.id}')">✏️</button>
           <button class="btn btn-danger btn-sm" onclick="deletarCliente('${c.id}')">🗑️</button>
         </div>
       </td>
-    </tr>
-  `).join('');
+    </tr>`;
+  }).join('');
 }
 
 // ═══════════════════════════════════════

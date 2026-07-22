@@ -47,6 +47,16 @@ Use como base o arquivo `.env.staging.example`. Os pontos críticos:
 - `TUPI_PARTY_ID=EVP`, `TUPI_COUNTRY_CODE=BR`.
 - `TUPI_SYNC_INTERVAL_MIN=15` para validar mais rápido.
 
+Para o e-mail automático de aniversário (opcional — sem essas variáveis o
+recurso fica desligado, sem afetar o resto do sistema):
+
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` → servidor de e-mail
+  (ex.: Gmail com senha de app, Brevo, Resend SMTP, etc.).
+- `SMTP_FROM` → remetente exibido (padrão: o próprio SMTP_USER).
+- `WHATSAPP_NUMERO` → número do WhatsApp da rede com DDI, só dígitos
+  (ex.: `5547999998888`) — destino do botão "Resgatar recarga grátis".
+- `ANIVERSARIO_HORA` → hora local (0-23) do envio diário (padrão: 9).
+
 ## Passo 5 — Publicar e pegar a URL de teste
 
 O Railway roda `npm install` e `npm start` sozinho. Ao terminar, ele gera uma

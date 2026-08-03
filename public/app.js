@@ -4136,7 +4136,7 @@ function gerarPDFParceiro(id) {
       ['Comissão a pagar (maior valor)',                    moneyBR(calc.comissaoParceiro)],
     ] : []),
     ...(calc.energiaPelaRede
-      ? [['Custo energia (pago pela rede)',                 `${moneyBR(calc.custoEnergia)} — não repassado`]]
+      ? [['Custo energia (pago pela rede) *',               moneyBR(calc.custoEnergia)]]
       : [['Custo energia a repassar',                       `${moneyBR(calc.custoEnergia)} (${moneyBR(calc.custoEnergiaUnit)}/kWh)`]]),
     ['Total a receber pelo parceiro',                       moneyBR(calc.totalRepasseParceiro)],
   ];
@@ -4197,9 +4197,9 @@ function gerarPDFParceiro(id) {
   doc.setDrawColor(220); doc.line(totalBoxX, y, valueX, y); y += 18;
   doc.setFontSize(10); doc.setTextColor(...dark); doc.setFont(undefined, 'bold');
   if (calc.energiaPelaRede) {
-    doc.text('Custo de energia (pago pela rede):', totalBoxX, y);
+    doc.text('Custo de energia (pago pela rede) *:', totalBoxX, y);
     doc.setTextColor(...gray);
-    doc.text(`${moneyBR(calc.custoEnergia)} — não repassado`, valueX, y, { align: 'right' });
+    doc.text(moneyBR(calc.custoEnergia), valueX, y, { align: 'right' });
     doc.setTextColor(...dark);
   } else {
     doc.text('Custo de energia a repassar:', totalBoxX, y);
@@ -4227,7 +4227,13 @@ function gerarPDFParceiro(id) {
   doc.setFontSize(11); doc.setTextColor(...dark); doc.setFont(undefined, 'bold');
   doc.text('TOTAL A RECEBER PELO PARCEIRO:', totalBoxX, y);
   doc.setTextColor(...green); doc.text(moneyBR(calc.totalRepasseParceiro), valueX, y, { align: 'right' });
-  y += 34;
+  y += 16;
+  if (calc.energiaPelaRede) {
+    doc.setFontSize(8); doc.setTextColor(...gray); doc.setFont(undefined, 'normal');
+    doc.text('* Energia paga diretamente à concessionária pela rede — não integra o repasse.', totalBoxX, y, { maxWidth: valueX - totalBoxX });
+    y += 18;
+  }
+  y += 16;
 
   const observacao = calc.energiaPelaRede
     ? `Observação: o custo de energia desta estação é pago diretamente à concessionária pela rede (padrão de energia em nome da rede) e por isso não integra o repasse ao parceiro, constando neste relatório apenas para composição do resultado. O total a receber pelo parceiro corresponde à comissão calculada sobre a receita antes da comissão (faturamento bruto - custo energia - taxas operacionais ${calc.taxaOperacionalPct}% - mensalidade).`
@@ -5419,60 +5425,92 @@ function renderPayback() {
   }
 
   // Para cada estação, calcular lucro líquido por mês usando a mesma lógica do módulo Parceiros
-  // (espelha calcularRelatorioParceiro → lucroEVParking)
-  function getLucroEstacaoPorMes(estacao) {
-    const parceiro = estacao.parceiroId ? parceiros.find(p => p.id === estacao.parceiroId) : null;
+  // (espelha calcularRelatorioParceiro → lucroEVParking).
+  //
+  // IMPORTANTE — custos do PARCEIRO (mensalidade e compromisso mínimo da comissão)
+  // são calculados no nível do parceiro/mês (como no fechamento real) e RATEADOS
+  // entre as estações dele pela participação na receita. Antes, eram descontados
+  // por inteiro em cada estação, dobrando o custo em parceiros multi-estação.
 
-    // Resolve o nome canônico da estação com a mesma prioridade que normalizarEstacao usa
-    // para as recargas: 1º pelo idTupi no ESTACAO_ID_MAP, 2º por ESTACAO_ALIASES, 3º o nome bruto.
-    const nomeCanon = (estacao.idTupi && ESTACAO_ID_MAP[String(estacao.idTupi)])
-      || ESTACAO_ALIASES[estacao.nome.toLowerCase().replace(/\s+/g, ' ')]
-      || estacao.nome;
+  // Recargas e dados mensais de uma estação — vínculo pelo ID Tupi (definitivo),
+  // com fallback por nome para recargas antigas sem idEstacao.
+  const _cacheDadosMes = new Map();
+  function dadosMesEstacao(estacao) {
+    if (_cacheDadosMes.has(estacao.id)) return _cacheDadosMes.get(estacao.id);
+    const idEst = String(estacao.idTupi || '').replace(/\D/g, '');
     const recsEstacao = recargas.filter(r => {
-      const nomeRec = normalizarEstacao(r);
       const valor = Number(r.cobranca ?? r.total ?? r.custo ?? 0);
-      return (nomeRec === nomeCanon || nomeRec === estacao.nome) && valor > 0;
+      if (!(valor > 0) || recargaOculta(r)) return false;
+      const idRec = String(r.idEstacao || '').replace(/\D/g, '');
+      if (idEst && idRec) return idRec === idEst;               // 1º: ID com ID
+      return normalizarEstacao(r) === estacao.nome;             // 2º: nome canônico
     });
-
-    // Agrupar por mês
-    // CORREÇÃO: usar recargaMesKey() que suporta tanto DD/MM/YYYY (PDF antigo)
-    // quanto YYYY-MM-DD HH:MM (CSV Tupi). A regex inline anterior só detectava
-    // o formato DD/MM/YYYY e ignorava silenciosamente todas as recargas do CSV Tupi.
     const porMes = {};
+    const parceiro = estacao.parceiroId ? parceiros.find(p => p.id === estacao.parceiroId) : null;
+    const custoEnUnit = parceiro ? Number(parceiro.custoEnergia || 0) : 0;
     recsEstacao.forEach(r => {
       const key = recargaMesKey(r);
       if (!key) return;
-      if (!porMes[key]) porMes[key] = { bruto: 0, kwh: 0, descontos: 0, taxaTupi: 0 };
-      porMes[key].bruto    += Number(r.cobranca ?? r.total ?? r.custo ?? 0);
-      porMes[key].kwh      += Number(r.kwh || 0);
-      porMes[key].descontos += descontoPosPagoDaRecarga(r);
-      porMes[key].taxaTupi += taxaTupiDaRecarga(r); // taxa da estação (multi-CNPJ), base bruta Tupi
+      if (!porMes[key]) porMes[key] = { bruto: 0, kwh: 0, descontos: 0, taxaTupi: 0, recLiq: 0, custoEn: 0 };
+      const m = porMes[key];
+      m.bruto     += Number(r.cobranca ?? r.total ?? r.custo ?? 0);
+      m.kwh       += Number(r.kwh || 0);
+      m.descontos += descontoPosPagoDaRecarga(r);
+      m.taxaTupi  += taxaTupiDaRecarga(r);
     });
+    Object.values(porMes).forEach(m => {
+      m.recLiq  = Math.max(0, m.bruto - m.descontos);
+      m.custoEn = m.kwh * custoEnUnit;
+    });
+    _cacheDadosMes.set(estacao.id, porMes);
+    return porMes;
+  }
 
-    // Calcular lucro EV Parking por mês — mesma fórmula de calcularRelatorioParceiro
-    return Object.entries(porMes).sort(([a],[b]) => a.localeCompare(b)).map(([mesKey, dados]) => {
-      const bruto          = dados.bruto;
-      const kwh            = dados.kwh;
-      // 1. Descontos pós-pagos (clientes com desconto contratual)
-      const receitaLiquida = Math.max(0, bruto - dados.descontos);
-      // 2. Taxa Tupi somada recarga a recarga (taxa da estação, base bruta Tupi c/ cupom)
-      const taxaTupi       = dados.taxaTupi;
-      // 3. Custo de energia repassado ao parceiro
-      const custoEn        = parceiro ? kwh * Number(parceiro.custoEnergia || 0) : 0;
-      // 4. Mensalidade repassada ao parceiro
-      const mensalidade    = parceiro ? Number(parceiro.mensalidade || 0) : 0;
-      // 5. Taxa operacional (% configurável no parceiro)
-      const taxaOpPct      = parceiro ? Number(parceiro.taxaOperacional || 0) : 0;
-      const taxaOp         = receitaLiquida * (taxaOpPct / 100);
-      // 6. Base de comissão = receita líq. − custo energia − taxa op. − mensalidade
-      const lucroBase      = receitaLiquida - custoEn - taxaOp - mensalidade;
-      // 7. Comissão do parceiro (com piso mínimo)
-      const comissaoBruta  = parceiro ? Math.max(0, lucroBase) * (Number(parceiro.comissao || 0) / 100) : 0;
-      const minimo         = parceiro ? Number(parceiro.compromisoMinimo || 0) : 0;
-      const comissao       = minimo > 0 ? Math.max(comissaoBruta, minimo) : comissaoBruta;
-      // 8. Lucro EV Parking = receita líq. − taxa Tupi − custo energia − mensalidade − comissão
-      const lucroLiq       = receitaLiquida - taxaTupi - custoEn - mensalidade - comissao;
-      return { mesKey, bruto, kwh, lucroLiq: Math.max(0, lucroLiq) };
+  // Comissão + mensalidade do parceiro por mês (nível parceiro, com piso mínimo),
+  // somando TODAS as estações vinculadas a ele — igual ao fechamento.
+  const _cacheParceiroMes = new Map();
+  function custosParceiroMes(parceiro) {
+    if (_cacheParceiroMes.has(parceiro.id)) return _cacheParceiroMes.get(parceiro.id);
+    const estacoesDoParceiro = estacoes.filter(e => e.parceiroId === parceiro.id);
+    const porMes = {}; // mes → { recLiq, custoEn }
+    estacoesDoParceiro.forEach(e => {
+      const dm = dadosMesEstacao(e);
+      Object.entries(dm).forEach(([mes, m]) => {
+        if (!porMes[mes]) porMes[mes] = { recLiq: 0, custoEn: 0 };
+        porMes[mes].recLiq  += m.recLiq;
+        porMes[mes].custoEn += m.custoEn;
+      });
+    });
+    const mensalidade = Number(parceiro.mensalidade || 0);
+    const taxaOpPct   = Number(parceiro.taxaOperacional || 0);
+    const comissaoPct = Number(parceiro.comissao || 0);
+    const minimo      = Number(parceiro.compromisoMinimo || 0);
+    const resultado = {};
+    Object.entries(porMes).forEach(([mes, t]) => {
+      const taxaOp        = t.recLiq * (taxaOpPct / 100);
+      const lucroBase     = t.recLiq - t.custoEn - taxaOp - mensalidade;
+      const comissaoBruta = Math.max(0, lucroBase) * (comissaoPct / 100);
+      const comissao      = minimo > 0 ? Math.max(comissaoBruta, minimo) : comissaoBruta;
+      resultado[mes] = { recLiqTotal: t.recLiq, comissao, mensalidade };
+    });
+    _cacheParceiroMes.set(parceiro.id, resultado);
+    return resultado;
+  }
+
+  function getLucroEstacaoPorMes(estacao) {
+    const parceiro = estacao.parceiroId ? parceiros.find(p => p.id === estacao.parceiroId) : null;
+    const porMes = dadosMesEstacao(estacao);
+    const custosParc = parceiro ? custosParceiroMes(parceiro) : {};
+
+    return Object.entries(porMes).sort(([a],[b]) => a.localeCompare(b)).map(([mesKey, m]) => {
+      // Rateio dos custos do parceiro pela participação da estação na receita do mês
+      const cp = custosParc[mesKey];
+      const share = cp && cp.recLiqTotal > 0 ? (m.recLiq / cp.recLiqTotal) : 0;
+      const custoParceiroRateado = cp ? share * (cp.comissao + cp.mensalidade) : 0;
+      // Lucro EV Parking da estação = receita líq. − taxa Tupi − custo energia − rateio(comissão + mensalidade)
+      // Meses negativos ABATEM o acumulado do payback (não são zerados).
+      const lucroLiq = m.recLiq - m.taxaTupi - m.custoEn - custoParceiroRateado;
+      return { mesKey, bruto: m.bruto, kwh: m.kwh, lucroLiq };
     });
   }
 
@@ -5497,7 +5535,7 @@ function renderPayback() {
     const bars = dadosMes.map((d, i) => {
       acumulado += d.lucroLiq;
       const x   = padL + gap + i * (barW + gap);
-      const h   = Math.max(2, (d.lucroLiq / maxVal) * plotH);
+      const h   = Math.max(2, (Math.max(0, d.lucroLiq) / maxVal) * plotH);
       const y   = padT + plotH - h;
       // Cor: vermelho até recuperar, verde depois
       const cor = acumulado >= investimento ? '#00e5a0' : '#3b82f6';

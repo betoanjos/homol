@@ -2863,9 +2863,15 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
   const receitaLiquida = Math.max(0, bruto - descontosPosPago);
   const kwh   = lista.reduce((s,r) => s + Number(r.kwh || 0), 0);
 
-  // Custo de energia a repassar ao parceiro
+  // Custo de energia da estação. Em regra o padrão está no nome do parceiro
+  // (ele paga a concessionária e a rede reembolsa no repasse). Quando
+  // energiaPelaRede = true (ex.: Max Center), o padrão está no nome da rede:
+  // o custo continua entrando no RESULTADO (deduz da base de comissão e do
+  // lucro), mas NÃO é somado no repasse ao parceiro.
   const custoEnergiaUnit = Number(parceiro.custoEnergia || 0);
   const custoEnergia = kwh * custoEnergiaUnit;
+  const energiaPelaRede = !!parceiro.energiaPelaRede;
+  const custoEnergiaRepasse = energiaPelaRede ? 0 : custoEnergia;
 
   // Mensalidade integrador (receita nossa)
   const mensalidade = Number(parceiro.mensalidade || 0);
@@ -2885,8 +2891,8 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
     ? Math.max(comissaoParceiroBruta, compromisoMinimo)
     : comissaoParceiroBruta;
 
-  // Repasse total ao parceiro = custo energia + comissão
-  const totalRepasseParceiro = custoEnergia + comissaoParceiro;
+  // Repasse total ao parceiro = custo energia (se aplicável) + comissão
+  const totalRepasseParceiro = custoEnergiaRepasse + comissaoParceiro;
 
   // ── Nosso lucro interno (não aparece no PDF do parceiro) ──
   // Taxa Tupi = custo nosso, pago à plataforma. Somada recarga a recarga:
@@ -2902,7 +2908,7 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
     lista, bruto, descontosPosPago, receitaLiquida, kwh,
     taxaTupi, taxaTupiPct,
     taxaOperacional, taxaOperacionalPct,
-    custoEnergiaUnit, custoEnergia, mensalidade, lucroLiquido,
+    custoEnergiaUnit, custoEnergia, custoEnergiaRepasse, energiaPelaRede, mensalidade, lucroLiquido,
     comissaoParceiroBruta, comissaoParceiro, compromisoMinimo,
     totalRepasseParceiro, lucroEVParking
   };
@@ -2924,6 +2930,8 @@ function openModalParceiro(id = null) {
   const fileInput = document.getElementById('p-arquivo-input'); if (fileInput) fileInput.value = '';
   carregarArquivosParceiro(parceiroFormId);
   set('custoEnergia', p?.custoEnergia ?? '0.80');
+  const chkEnergia = document.getElementById('p-energiaPelaRede');
+  if (chkEnergia) chkEnergia.checked = !!p?.energiaPelaRede;
   set('mensalidade', p?.mensalidade ?? '0');
   set('comissao', p?.comissao ?? '0');
   set('taxaOperacional', p?.taxaOperacional ?? '0');
@@ -2984,6 +2992,7 @@ function salvarParceiro() {
     telefone:         get('telefone'),
     doc:              get('doc'),
     custoEnergia:     Number(get('custoEnergia') || 0),
+    energiaPelaRede:  !!document.getElementById('p-energiaPelaRede')?.checked,
     mensalidade:      Number(get('mensalidade') || 0),
     comissao:         Number(get('comissao') || 0),
     taxaOperacional:  Number(get('taxaOperacional') || 0),
@@ -3862,7 +3871,7 @@ function renderParceiros() {
         <div class="stat-card green"><div class="stat-value">${moneyBR(calc.bruto)}</div><div class="stat-label">Faturamento bruto · ${nomeMesAno(mesKey)}${calc.descontosPosPago > 0 ? ' · Líq. ' + moneyBR(calc.receitaLiquida) : ''}</div></div>
         <div class="stat-card blue"><div class="stat-value">${formatKwh(calc.kwh)}</div><div class="stat-label">Energia consumida</div></div>
         <div class="stat-card yellow"><div class="stat-value">${moneyBR(calc.lucroEVParking)}</div><div class="stat-label">Lucro líquido</div></div>
-        <div class="stat-card red"><div class="stat-value">${moneyBR(calc.totalRepasseParceiro)}</div><div class="stat-label">Comissão + energia (repasse)</div></div>
+        <div class="stat-card red"><div class="stat-value">${moneyBR(calc.totalRepasseParceiro)}</div><div class="stat-label">${calc.energiaPelaRede ? 'Comissão (repasse) · energia paga pela rede' : 'Comissão + energia (repasse)'}</div></div>
       </div>
       <div style="margin-top:12px;font-size:12px;color:var(--text2)">${detalhe}</div>
     </div>`;
@@ -4098,7 +4107,9 @@ function gerarPDFParceiro(id) {
       ['Compromisso mínimo mensal',                         moneyBR(calc.compromisoMinimo)],
       ['Comissão a pagar (maior valor)',                    moneyBR(calc.comissaoParceiro)],
     ] : []),
-    ['Custo energia a repassar',                            `${moneyBR(calc.custoEnergia)} (${moneyBR(calc.custoEnergiaUnit)}/kWh)`],
+    ...(calc.energiaPelaRede
+      ? [['Custo energia (pago pela rede)',                 `${moneyBR(calc.custoEnergia)} — não repassado`]]
+      : [['Custo energia a repassar',                       `${moneyBR(calc.custoEnergia)} (${moneyBR(calc.custoEnergiaUnit)}/kWh)`]]),
     ['Total a receber pelo parceiro',                       moneyBR(calc.totalRepasseParceiro)],
   ];
 
@@ -4157,8 +4168,15 @@ function gerarPDFParceiro(id) {
   checkPage(130);
   doc.setDrawColor(220); doc.line(totalBoxX, y, valueX, y); y += 18;
   doc.setFontSize(10); doc.setTextColor(...dark); doc.setFont(undefined, 'bold');
-  doc.text('Custo de energia a repassar:', totalBoxX, y);
-  doc.text(moneyBR(calc.custoEnergia), valueX, y, { align: 'right' });
+  if (calc.energiaPelaRede) {
+    doc.text('Custo de energia (pago pela rede):', totalBoxX, y);
+    doc.setTextColor(...gray);
+    doc.text(`${moneyBR(calc.custoEnergia)} — não repassado`, valueX, y, { align: 'right' });
+    doc.setTextColor(...dark);
+  } else {
+    doc.text('Custo de energia a repassar:', totalBoxX, y);
+    doc.text(moneyBR(calc.custoEnergia), valueX, y, { align: 'right' });
+  }
   y += 20;
   doc.text(`Comissão a repassar ao parceiro (${Number(parceiro.comissao || 0)}%):`, totalBoxX, y);
   doc.setTextColor(...green);
@@ -4183,7 +4201,9 @@ function gerarPDFParceiro(id) {
   doc.setTextColor(...green); doc.text(moneyBR(calc.totalRepasseParceiro), valueX, y, { align: 'right' });
   y += 34;
 
-  const observacao = `Observação: o total a receber pelo parceiro soma o custo de energia já pago pelo parceiro mais a comissão calculada sobre a receita antes da comissão (faturamento bruto - custo energia - taxas operacionais ${calc.taxaOperacionalPct}% - mensalidade).`;
+  const observacao = calc.energiaPelaRede
+    ? `Observação: o custo de energia desta estação é pago diretamente à concessionária pela rede (padrão de energia em nome da rede) e por isso não integra o repasse ao parceiro, constando neste relatório apenas para composição do resultado. O total a receber pelo parceiro corresponde à comissão calculada sobre a receita antes da comissão (faturamento bruto - custo energia - taxas operacionais ${calc.taxaOperacionalPct}% - mensalidade).`
+    : `Observação: o total a receber pelo parceiro soma o custo de energia já pago pelo parceiro mais a comissão calculada sobre a receita antes da comissão (faturamento bruto - custo energia - taxas operacionais ${calc.taxaOperacionalPct}% - mensalidade).`;
   const obsLinhas = doc.splitTextToSize(observacao, W - margin*2);
   checkPage((obsLinhas.length * 10) + 40);
   doc.setFontSize(8); doc.setTextColor(...gray); doc.setFont(undefined, 'normal');

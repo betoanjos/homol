@@ -1151,6 +1151,7 @@
         </div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
           <input type="month" id="estacoes-mes" onchange="renderEstacoes()" oninput="renderEstacoes()" style="width:auto">
+          <button class="btn btn-secondary" onclick="corrigirEstacoesDuplicadas()" title="Mescla estações duplicadas mantendo os cadastros manuais">🧹 Corrigir duplicadas</button>
           <button class="btn btn-primary" onclick="openModalEstacao()">＋ Nova Estação</button>
         </div>
       </div>
@@ -1532,6 +1533,15 @@
       <div class="form-group">
         <label>Custo de Energia (R$/kWh) *</label>
         <input type="number" id="p-custoEnergia" min="0" step="0.001" placeholder="0.800">
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-weight:400">
+          <input type="checkbox" id="p-energiaPelaRede" style="margin-top:3px;width:auto">
+          <span>
+            <strong>Energia paga direto à concessionária pela rede</strong><br>
+            <span style="font-size:11px;color:var(--text3)">Marque quando o padrão de energia está no nome da rede (ex.: Max Center). O custo de energia continua aparecendo no PDF para o cálculo do resultado, mas <u>não é somado no repasse</u> ao parceiro.</span>
+          </span>
+        </label>
       </div>
       <div class="form-group">
         <label>Mensalidade Integrador (R$)</label>

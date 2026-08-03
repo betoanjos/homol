@@ -62,6 +62,15 @@ async function loadState() {
     recargas = data.recargas || recargas || [];
     parceiros = data.parceiros || parceiros || [];
     estacoes = data.estacoes || estacoes || [];
+    // Reidratar os mapas de ID/alias com as estações cadastradas (o mapa fixo
+    // no código só cobre as estações antigas; sem isso, estações novas perdem
+    // o vínculo por ID após recarregar a página)
+    (estacoes || []).forEach(e => {
+      const idN = String(e.idTupi || '').replace(/\D/g, '');
+      if (idN) ESTACAO_ID_MAP[idN] = e.nome;
+      const nLow = String(e.nome || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (nLow && !ESTACAO_ALIASES[nLow]) ESTACAO_ALIASES[nLow] = e.nome;
+    });
     contasReceber = data.contasReceber || [];
     recebiveisManuais = data.recebiveisManuais || [];
     fluxoCaixa = data.fluxoCaixa || [];
@@ -2743,19 +2752,38 @@ function normalizarEstacao(r) {
 
 
 
+// ID Tupi normalizado: só dígitos (elimina espaços, prefixos e variações de digitação)
+function normalizarIdTupi(v) {
+  return String(v || '').replace(/\D/g, '');
+}
+
 function garantirEstacaoDetectada(idTupi, nomeEstacao) {
-  const id = String(idTupi || '').trim();
+  const id = normalizarIdTupi(idTupi);
   const nome = String(nomeEstacao || '').trim();
   if (!id && !nome) return null;
   // Resolve o nome canônico para evitar criar duplicatas com nomes diferentes
   const nomeCanon = (id && ESTACAO_ID_MAP[id])
     || ESTACAO_ALIASES[nome.toLowerCase().replace(/\s+/g, ' ')]
     || nome;
-  const existente = estacoes.find(e =>
-    (id && String(e.idTupi || '') === id) ||
-    (nome && String(e.nome || '').toLowerCase() === nome.toLowerCase()) ||
-    (nomeCanon && String(e.nome || '') === nomeCanon)
-  );
+  const normNome = v => String(v || '').toLowerCase().replace(/^p[uú]blica\s+/i, '').replace(/\s+/g, ' ').trim();
+
+  // 1º critério: ID Tupi (vínculo definitivo — nunca duplica se o ID bater)
+  let existente = id ? estacoes.find(e => normalizarIdTupi(e.idTupi) === id) : null;
+
+  // 2º critério: nome exato ou canônico (para cadastros ainda sem ID)
+  if (!existente) {
+    existente = estacoes.find(e =>
+      (nome && normNome(e.nome) === normNome(nome)) ||
+      (nomeCanon && String(e.nome || '') === nomeCanon)
+    );
+    // Autocorreção: achou pelo nome e o cadastro está sem ID → grava o ID
+    // para que das próximas vezes o vínculo seja pelo ID (pedido do usuário).
+    if (existente && id && !normalizarIdTupi(existente.idTupi)) {
+      existente.idTupi = id;
+      existente.atualizadoEm = new Date().toISOString();
+      ESTACAO_ID_MAP[id] = existente.nome;
+    }
+  }
   if (existente) return existente;
   const nomeFinal = nome || `Estação Tupi ${id}`;
   const nova = {
@@ -2863,9 +2891,15 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
   const receitaLiquida = Math.max(0, bruto - descontosPosPago);
   const kwh   = lista.reduce((s,r) => s + Number(r.kwh || 0), 0);
 
-  // Custo de energia a repassar ao parceiro
+  // Custo de energia da estação. Em regra o padrão está no nome do parceiro
+  // (ele paga a concessionária e a rede reembolsa no repasse). Quando
+  // energiaPelaRede = true (ex.: Max Center), o padrão está no nome da rede:
+  // o custo continua entrando no RESULTADO (deduz da base de comissão e do
+  // lucro), mas NÃO é somado no repasse ao parceiro.
   const custoEnergiaUnit = Number(parceiro.custoEnergia || 0);
   const custoEnergia = kwh * custoEnergiaUnit;
+  const energiaPelaRede = !!parceiro.energiaPelaRede;
+  const custoEnergiaRepasse = energiaPelaRede ? 0 : custoEnergia;
 
   // Mensalidade integrador (receita nossa)
   const mensalidade = Number(parceiro.mensalidade || 0);
@@ -2885,8 +2919,8 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
     ? Math.max(comissaoParceiroBruta, compromisoMinimo)
     : comissaoParceiroBruta;
 
-  // Repasse total ao parceiro = custo energia + comissão
-  const totalRepasseParceiro = custoEnergia + comissaoParceiro;
+  // Repasse total ao parceiro = custo energia (se aplicável) + comissão
+  const totalRepasseParceiro = custoEnergiaRepasse + comissaoParceiro;
 
   // ── Nosso lucro interno (não aparece no PDF do parceiro) ──
   // Taxa Tupi = custo nosso, pago à plataforma. Somada recarga a recarga:
@@ -2902,7 +2936,7 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
     lista, bruto, descontosPosPago, receitaLiquida, kwh,
     taxaTupi, taxaTupiPct,
     taxaOperacional, taxaOperacionalPct,
-    custoEnergiaUnit, custoEnergia, mensalidade, lucroLiquido,
+    custoEnergiaUnit, custoEnergia, custoEnergiaRepasse, energiaPelaRede, mensalidade, lucroLiquido,
     comissaoParceiroBruta, comissaoParceiro, compromisoMinimo,
     totalRepasseParceiro, lucroEVParking
   };
@@ -2924,6 +2958,8 @@ function openModalParceiro(id = null) {
   const fileInput = document.getElementById('p-arquivo-input'); if (fileInput) fileInput.value = '';
   carregarArquivosParceiro(parceiroFormId);
   set('custoEnergia', p?.custoEnergia ?? '0.80');
+  const chkEnergia = document.getElementById('p-energiaPelaRede');
+  if (chkEnergia) chkEnergia.checked = !!p?.energiaPelaRede;
   set('mensalidade', p?.mensalidade ?? '0');
   set('comissao', p?.comissao ?? '0');
   set('taxaOperacional', p?.taxaOperacional ?? '0');
@@ -2984,6 +3020,7 @@ function salvarParceiro() {
     telefone:         get('telefone'),
     doc:              get('doc'),
     custoEnergia:     Number(get('custoEnergia') || 0),
+    energiaPelaRede:  !!document.getElementById('p-energiaPelaRede')?.checked,
     mensalidade:      Number(get('mensalidade') || 0),
     comissao:         Number(get('comissao') || 0),
     taxaOperacional:  Number(get('taxaOperacional') || 0),
@@ -3862,7 +3899,7 @@ function renderParceiros() {
         <div class="stat-card green"><div class="stat-value">${moneyBR(calc.bruto)}</div><div class="stat-label">Faturamento bruto · ${nomeMesAno(mesKey)}${calc.descontosPosPago > 0 ? ' · Líq. ' + moneyBR(calc.receitaLiquida) : ''}</div></div>
         <div class="stat-card blue"><div class="stat-value">${formatKwh(calc.kwh)}</div><div class="stat-label">Energia consumida</div></div>
         <div class="stat-card yellow"><div class="stat-value">${moneyBR(calc.lucroEVParking)}</div><div class="stat-label">Lucro líquido</div></div>
-        <div class="stat-card red"><div class="stat-value">${moneyBR(calc.totalRepasseParceiro)}</div><div class="stat-label">Comissão + energia (repasse)</div></div>
+        <div class="stat-card red"><div class="stat-value">${moneyBR(calc.totalRepasseParceiro)}</div><div class="stat-label">${calc.energiaPelaRede ? 'Comissão (repasse) · energia paga pela rede' : 'Comissão + energia (repasse)'}</div></div>
       </div>
       <div style="margin-top:12px;font-size:12px;color:var(--text2)">${detalhe}</div>
     </div>`;
@@ -4098,7 +4135,9 @@ function gerarPDFParceiro(id) {
       ['Compromisso mínimo mensal',                         moneyBR(calc.compromisoMinimo)],
       ['Comissão a pagar (maior valor)',                    moneyBR(calc.comissaoParceiro)],
     ] : []),
-    ['Custo energia a repassar',                            `${moneyBR(calc.custoEnergia)} (${moneyBR(calc.custoEnergiaUnit)}/kWh)`],
+    ...(calc.energiaPelaRede
+      ? [['Custo energia (pago pela rede)',                 `${moneyBR(calc.custoEnergia)} — não repassado`]]
+      : [['Custo energia a repassar',                       `${moneyBR(calc.custoEnergia)} (${moneyBR(calc.custoEnergiaUnit)}/kWh)`]]),
     ['Total a receber pelo parceiro',                       moneyBR(calc.totalRepasseParceiro)],
   ];
 
@@ -4157,8 +4196,15 @@ function gerarPDFParceiro(id) {
   checkPage(130);
   doc.setDrawColor(220); doc.line(totalBoxX, y, valueX, y); y += 18;
   doc.setFontSize(10); doc.setTextColor(...dark); doc.setFont(undefined, 'bold');
-  doc.text('Custo de energia a repassar:', totalBoxX, y);
-  doc.text(moneyBR(calc.custoEnergia), valueX, y, { align: 'right' });
+  if (calc.energiaPelaRede) {
+    doc.text('Custo de energia (pago pela rede):', totalBoxX, y);
+    doc.setTextColor(...gray);
+    doc.text(`${moneyBR(calc.custoEnergia)} — não repassado`, valueX, y, { align: 'right' });
+    doc.setTextColor(...dark);
+  } else {
+    doc.text('Custo de energia a repassar:', totalBoxX, y);
+    doc.text(moneyBR(calc.custoEnergia), valueX, y, { align: 'right' });
+  }
   y += 20;
   doc.text(`Comissão a repassar ao parceiro (${Number(parceiro.comissao || 0)}%):`, totalBoxX, y);
   doc.setTextColor(...green);
@@ -4183,7 +4229,9 @@ function gerarPDFParceiro(id) {
   doc.setTextColor(...green); doc.text(moneyBR(calc.totalRepasseParceiro), valueX, y, { align: 'right' });
   y += 34;
 
-  const observacao = `Observação: o total a receber pelo parceiro soma o custo de energia já pago pelo parceiro mais a comissão calculada sobre a receita antes da comissão (faturamento bruto - custo energia - taxas operacionais ${calc.taxaOperacionalPct}% - mensalidade).`;
+  const observacao = calc.energiaPelaRede
+    ? `Observação: o custo de energia desta estação é pago diretamente à concessionária pela rede (padrão de energia em nome da rede) e por isso não integra o repasse ao parceiro, constando neste relatório apenas para composição do resultado. O total a receber pelo parceiro corresponde à comissão calculada sobre a receita antes da comissão (faturamento bruto - custo energia - taxas operacionais ${calc.taxaOperacionalPct}% - mensalidade).`
+    : `Observação: o total a receber pelo parceiro soma o custo de energia já pago pelo parceiro mais a comissão calculada sobre a receita antes da comissão (faturamento bruto - custo energia - taxas operacionais ${calc.taxaOperacionalPct}% - mensalidade).`;
   const obsLinhas = doc.splitTextToSize(observacao, W - margin*2);
   checkPage((obsLinhas.length * 10) + 40);
   doc.setFontSize(8); doc.setTextColor(...gray); doc.setFont(undefined, 'normal');
@@ -5008,7 +5056,7 @@ function salvarEstacao() {
   const obj = {
     id:               editingEstacaoId || 'est_' + Date.now(),
     nome:             get('nome'),
-    idTupi:           get('idTupi'),
+    idTupi:           normalizarIdTupi(get('idTupi')),
     taxaTupiPct:      Number(get('taxaTupiPct')) > 0 ? Number(get('taxaTupiPct')) : TAXA_TUPI_PADRAO_PCT,
     parceiroId:       get('parceiroId') || null,
     endereco:         get('endereco'),
@@ -5066,6 +5114,79 @@ function deletarEstacao(id) {
   saveState();
   renderEstacoes();
   toast('Estação removida.', 'success');
+}
+
+// ─── Limpeza de estações duplicadas ─────────────────────────────────────────
+// Agrupa por ID Tupi (e por nome normalizado para as sem ID), mantém o melhor
+// cadastro de cada grupo (prioriza o completado manualmente), mescla campos
+// úteis das cópias e remove as duplicatas. Atualiza os vínculos dos parceiros.
+function corrigirEstacoesDuplicadas() {
+  const normNome = v => String(v || '').toLowerCase().replace(/^p[uú]blica\s+/i, '').replace(/\s+/g, ' ').trim();
+  const grupos = new Map(); // chave: 'id:<idTupi>' ou 'nome:<nome-normalizado>'
+  estacoes.forEach(e => {
+    const id = normalizarIdTupi(e.idTupi);
+    const chave = id ? 'id:' + id : 'nome:' + normNome(e.nome);
+    if (!grupos.has(chave)) grupos.set(chave, []);
+    grupos.get(chave).push(e);
+  });
+
+  // 2ª passada: estações SEM ID cujo nome bate com um grupo COM ID → juntam-se a ele
+  for (const [chave, lista] of [...grupos.entries()]) {
+    if (!chave.startsWith('nome:')) continue;
+    const nomeGrupo = chave.slice(5);
+    const alvo = [...grupos.entries()].find(([k, l]) =>
+      k.startsWith('id:') && l.some(e => normNome(e.nome) === nomeGrupo)
+    );
+    if (alvo) { alvo[1].push(...lista); grupos.delete(chave); }
+  }
+
+  let removidas = 0, mescladas = 0;
+  const renomeios = []; // [nomeAntigo, nomeFinal] p/ atualizar parceiros
+  for (const lista of grupos.values()) {
+    if (lista.length < 2) continue;
+    // Pontuação: cadastro manual completo vence pendente automático
+    const score = e =>
+      (e.pendenteCadastro ? 0 : 100) +
+      (e.parceiroId ? 20 : 0) +
+      (normalizarIdTupi(e.idTupi) ? 10 : 0) +
+      (e.endereco ? 3 : 0) + (e.potencia ? 2 : 0) +
+      ((e.documentos || []).length ? 2 : 0) + (Number(e.investimento) > 0 ? 2 : 0);
+    lista.sort((a, b) => score(b) - score(a));
+    const principal = lista[0];
+    for (const dup of lista.slice(1)) {
+      // Mesclar o que o principal não tiver
+      if (!normalizarIdTupi(principal.idTupi) && normalizarIdTupi(dup.idTupi)) principal.idTupi = normalizarIdTupi(dup.idTupi);
+      if (!principal.parceiroId && dup.parceiroId) principal.parceiroId = dup.parceiroId;
+      ['endereco', 'potencia', 'conector', 'dataInauguracao'].forEach(c => {
+        if (!principal[c] && dup[c]) principal[c] = dup[c];
+      });
+      if (!Number(principal.investimento) && Number(dup.investimento)) principal.investimento = dup.investimento;
+      if ((dup.documentos || []).length) principal.documentos = [...(principal.documentos || []), ...dup.documentos];
+      if (Number(dup.taxaTupiPct) > 0 && !(Number(principal.taxaTupiPct) > 0)) principal.taxaTupiPct = dup.taxaTupiPct;
+      if (String(dup.nome || '') !== String(principal.nome || '')) renomeios.push([dup.nome, principal.nome]);
+      estacoes = estacoes.filter(e => e.id !== dup.id);
+      removidas++;
+    }
+    principal.atualizadoEm = new Date().toISOString();
+    if (normalizarIdTupi(principal.idTupi)) ESTACAO_ID_MAP[normalizarIdTupi(principal.idTupi)] = principal.nome;
+    mescladas++;
+  }
+
+  // Atualizar vínculos de equipamentos nos parceiros (nome antigo → nome mantido)
+  renomeios.forEach(([antigo, final]) => {
+    parceiros.forEach(pr => {
+      if (!Array.isArray(pr.equipamentos)) return;
+      pr.equipamentos = [...new Set(pr.equipamentos.map(eq => eq === antigo ? final : eq))];
+    });
+  });
+
+  if (removidas > 0) {
+    saveState();
+    renderEstacoes();
+    toast(`${removidas} estação(ões) duplicada(s) removida(s) e mesclada(s). Os cadastros manuais foram preservados.`, 'success');
+  } else {
+    toast('Nenhuma duplicata encontrada — cadastros já estão íntegros.', 'success');
+  }
 }
 
 function renderEstacoes() {

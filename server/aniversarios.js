@@ -181,6 +181,20 @@ async function enviarViaBrevo({ para, nome, assunto, html, nomeRede }) {
   }
 }
 
+// Envio genérico (reutilizado pelo módulo de segurança e outros): usa o mesmo
+// provedor configurado (Brevo API ou SMTP).
+export async function enviarEmailGenerico({ para, assunto, html, nomeRemetente }) {
+  const { nomeRede } = await carregarClientes().catch(() => ({ nomeRede: 'EV Parking' }));
+  const nomeExib = nomeRemetente || nomeExibicao(nomeRede);
+  if (emailProvider() === 'brevo') {
+    await enviarViaBrevo({ para, nome: para, assunto, html, nomeRede: nomeExib });
+    return;
+  }
+  const transporter = await criarTransporter();
+  const { from } = smtpConfig();
+  await transporter.sendMail({ from: `"${nomeExib}" <${from}>`, to: para, subject: assunto, html });
+}
+
 async function enviarEmail({ para, nome, nomeRede }) {
   const nomeRedeExib = nomeExibicao(nomeRede);
   const linkWhats = montarLinkWhatsApp(nome, para);

@@ -29,11 +29,18 @@
     <input id="username" name="username" autocomplete="username" required autofocus />
     <label for="password">Senha</label>
     <input id="password" name="password" type="password" autocomplete="current-password" required />
+    <div id="step-2fa" style="display:none">
+      <label for="codigo">Código de verificação</label>
+      <input id="codigo" name="codigo" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" autocomplete="one-time-code" style="text-align:center;letter-spacing:10px;font-size:22px;font-weight:700" />
+      <div style="font-size:12px;color:var(--text2);margin-top:8px">Enviamos um código de 6 dígitos para o e-mail de segurança. Ele vale por 10 minutos.</div>
+    </div>
     <button id="btn" type="submit">Entrar</button>
     <div class="error" id="error"></div>
     <div class="foot">EV Core · ambiente protegido</div>
   </form>
   <script>
+    let ticket2fa = null;
+
     document.getElementById('login-form').addEventListener('submit', async (event) => {
       event.preventDefault();
       const btn = document.getElementById('btn');
@@ -41,7 +48,25 @@
       btn.disabled = true;
       error.textContent = '';
       try {
-        const res = await fetch('/api/login', {
+        let res, data;
+        if (ticket2fa) {
+          // Etapa 2: confirmar o código
+          res = await fetch('/api/login/2fa', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticket: ticket2fa, codigo: document.getElementById('codigo').value.trim() })
+          });
+          data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            // Código expirado/esgotado → voltar para a etapa 1
+            if (/expirado|novamente\./i.test(data.error || '') && !/incorreto/i.test(data.error || '')) resetarEtapa();
+            throw new Error(data.error || 'Falha na verificação.');
+          }
+          window.location.href = '/';
+          return;
+        }
+        // Etapa 1: usuário e senha
+        res = await fetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -49,8 +74,20 @@
             password: document.getElementById('password').value
           })
         });
-        const data = await res.json().catch(() => ({}));
+        data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Falha no login.');
+        if (data.twofa) {
+          // Mostrar a etapa do código
+          ticket2fa = data.ticket;
+          document.getElementById('username').parentNode ? null : null;
+          document.getElementById('username').style.display = 'none';
+          document.getElementById('password').style.display = 'none';
+          document.querySelectorAll('label[for="username"], label[for="password"]').forEach(l => l.style.display = 'none');
+          document.getElementById('step-2fa').style.display = 'block';
+          document.getElementById('btn').textContent = 'Confirmar código';
+          document.getElementById('codigo').focus();
+          return;
+        }
         window.location.href = '/';
       } catch (err) {
         error.textContent = err.message;
@@ -58,6 +95,16 @@
         btn.disabled = false;
       }
     });
+
+    function resetarEtapa() {
+      ticket2fa = null;
+      document.getElementById('username').style.display = '';
+      document.getElementById('password').style.display = '';
+      document.querySelectorAll('label[for="username"], label[for="password"]').forEach(l => l.style.display = '');
+      document.getElementById('step-2fa').style.display = 'none';
+      document.getElementById('codigo').value = '';
+      document.getElementById('btn').textContent = 'Entrar';
+    }
   </script>
 </body>
 </html>

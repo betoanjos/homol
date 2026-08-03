@@ -11,7 +11,8 @@ import { promisify } from 'util';
 import pool from './db.js';
 import { initTupiDB, syncTupi, getSyncStatus, listRecargas, iniciarSyncAgendado } from './tupiSync.js';
 import { fetchSessionUserData, tupiConfig } from './tupi.js';
-import { initAniversariosDB, processarAniversarios, enviarTesteAniversario, statusAniversarios, iniciarAgendadorAniversarios } from './aniversarios.js';
+import { initAniversariosDB, processarAniversarios, enviarTesteAniversario, statusAniversarios, iniciarAgendadorAniversarios, enviarEmailGenerico, aniversariosConfigurado } from './aniversarios.js';
+import { initSegurancaDB, checarBloqueio, registrarFalhaLogin, limparFalhasLogin, twofaAtivo, twofaEmailDestino, criarOtp, validarOtp, emailCodigoHTML, emailAlertaLoginHTML, getClientIp } from './seguranca.js';
 
 const app = express();
 app.use(cors());
@@ -39,7 +40,7 @@ let ultimoBackup = null;
 
 const SESSION_COOKIE = 'evcore_session';
 const SESSION_MAX_AGE_HOURS = 8;
-const PUBLIC_PATHS = new Set(['/login', '/api/login', '/api/logout', '/api/me', '/api/health', '/logo-evparking.png']);
+const PUBLIC_PATHS = new Set(['/login', '/api/login', '/api/login/2fa', '/api/logout', '/api/me', '/api/health', '/logo-evparking.png']);
 
 function parseCookies(req) {
   const header = req.headers.cookie || '';
@@ -243,6 +244,12 @@ await initStateDB();
 await initAuthDB();
 await initTupiDB();
 await initAniversariosDB();
+await initSegurancaDB();
+if (twofaAtivo() && !aniversariosConfigurado()) {
+  console.warn('LOGIN_2FA_EMAIL definido, mas nenhum provedor de e-mail configurado (BREVO_API_KEY ou SMTP). A verificação em duas etapas NÃO funcionará até configurar.');
+} else if (twofaAtivo()) {
+  console.log('Verificação em duas etapas ATIVA — códigos enviados para', twofaEmailDestino());
+}
 await initParceiroArquivosDB();
 
 app.get('/login', async (req, res) => {
@@ -251,27 +258,100 @@ app.get('/login', async (req, res) => {
   return res.sendFile(path.join(publicDir, 'login.html'));
 });
 
+// Cria a sessão e dispara o alerta de acesso (assíncrono, não bloqueia o login)
+async function concluirLogin(req, res, user) {
+  const token = crypto.randomBytes(32).toString('hex');
+  await pool.query(
+    `INSERT INTO app_sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + ($3 || ' hours')::interval)`,
+    [token, user.id, String(SESSION_MAX_AGE_HOURS)]
+  );
+  res.setHeader('Set-Cookie', sessionCookie(token));
+
+  // Camada 3: alerta de acesso (fire-and-forget)
+  const destinoAlerta = twofaEmailDestino();
+  if (destinoAlerta && aniversariosConfigurado()) {
+    const quando = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    enviarEmailGenerico({
+      para: destinoAlerta,
+      assunto: `🔐 Novo acesso ao EV Core — ${quando}`,
+      html: emailAlertaLoginHTML({
+        usuario: user.username,
+        ip: getClientIp(req),
+        agente: String(req.headers['user-agent'] || 'desconhecido').slice(0, 160),
+        quando
+      })
+    }).catch(err => console.warn('Falha ao enviar alerta de acesso:', err.message));
+  }
+  return res.json({ ok: true, user: { username: user.username, role: user.role } });
+}
+
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body || {};
     if (!username || !password) return res.status(400).json({ error: 'Informe usuário e senha.' });
 
+    // Camada 1: bloqueio por tentativas
+    const bloqueadoMin = checarBloqueio(req, username);
+    if (bloqueadoMin) {
+      return res.status(429).json({ error: `Muitas tentativas. Tente novamente em ${bloqueadoMin} minuto(s).` });
+    }
+
     const result = await pool.query('SELECT id, username, password_hash, role FROM app_users WHERE username = $1', [String(username).trim()]);
     const user = result.rows[0];
     if (!user || !verifyPassword(password, user.password_hash)) {
+      registrarFalhaLogin(req, username);
       return res.status(401).json({ error: 'Usuário ou senha inválidos.' });
     }
+    limparFalhasLogin(req, username);
 
-    const token = crypto.randomBytes(32).toString('hex');
-    await pool.query(
-      `INSERT INTO app_sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + ($3 || ' hours')::interval)`,
-      [token, user.id, String(SESSION_MAX_AGE_HOURS)]
-    );
-    res.setHeader('Set-Cookie', sessionCookie(token));
-    return res.json({ ok: true, user: { username: user.username, role: user.role } });
+    // Camada 2: verificação em duas etapas por e-mail (se ativada)
+    if (twofaAtivo()) {
+      if (!aniversariosConfigurado()) {
+        return res.status(500).json({ error: 'Verificação em duas etapas ativa, mas o e-mail não está configurado no servidor.' });
+      }
+      const { ticket, codigo, validadeMin } = await criarOtp(user.id);
+      try {
+        await enviarEmailGenerico({
+          para: twofaEmailDestino(),
+          assunto: `🔐 Código de acesso EV Core: ${codigo}`,
+          html: emailCodigoHTML(codigo, validadeMin),
+          nomeRemetente: 'EV Core Segurança'
+        });
+      } catch (err) {
+        console.error('Falha ao enviar código 2FA:', err.message);
+        return res.status(500).json({ error: 'Não foi possível enviar o código de verificação. Tente novamente.' });
+      }
+      return res.json({ twofa: true, ticket, mensagem: 'Código enviado para o e-mail de segurança.' });
+    }
+
+    return await concluirLogin(req, res, user);
   } catch (err) {
     console.error('Erro no login:', err);
     return res.status(500).json({ error: 'Erro ao fazer login.' });
+  }
+});
+
+// Etapa 2: confirmação do código
+app.post('/api/login/2fa', async (req, res) => {
+  try {
+    const { ticket, codigo } = req.body || {};
+    const bloqueadoMin = checarBloqueio(req, '2fa');
+    if (bloqueadoMin) {
+      return res.status(429).json({ error: `Muitas tentativas. Tente novamente em ${bloqueadoMin} minuto(s).` });
+    }
+    const v = await validarOtp(ticket, codigo);
+    if (!v.ok) {
+      registrarFalhaLogin(req, '2fa');
+      return res.status(401).json({ error: v.erro });
+    }
+    limparFalhasLogin(req, '2fa');
+    const result = await pool.query('SELECT id, username, role FROM app_users WHERE id = $1', [v.userId]);
+    const user = result.rows[0];
+    if (!user) return res.status(401).json({ error: 'Usuário não encontrado.' });
+    return await concluirLogin(req, res, user);
+  } catch (err) {
+    console.error('Erro na verificação em duas etapas:', err);
+    return res.status(500).json({ error: 'Erro na verificação.' });
   }
 });
 

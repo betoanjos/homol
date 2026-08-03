@@ -76,6 +76,15 @@ Se `BREVO_API_KEY` estiver presente, ela tem prioridade sobre o SMTP.
   (ex.: `5547999998888`) — destino do botão "Resgatar recarga grátis".
 - `ANIVERSARIO_HORA` → hora local (0-23) do envio diário (padrão: 9).
 
+Segurança extra do login (recomendado em produção):
+
+- `LOGIN_2FA_EMAIL` → e-mail que recebe o código de verificação em duas
+  etapas e os alertas de acesso. Ao definir, todo login passa a exigir o
+  código de 6 dígitos enviado a esse e-mail (requer o provedor de e-mail
+  configurado — Brevo ou SMTP). Para desativar, basta remover a variável.
+- O bloqueio automático por tentativas erradas (anti força-bruta) é sempre
+  ativo, sem configuração: 5 erros bloqueiam por 15 min, 10 por 1 hora.
+
 ## Passo 5 — Publicar e pegar a URL de teste
 
 O Railway roda `npm install` e `npm start` sozinho. Ao terminar, ele gera uma

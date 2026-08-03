@@ -133,6 +133,68 @@ export async function validarOtp(ticket, codigo) {
   return { ok: true, userId: otp.user_id };
 }
 
+// ── Dispositivos confiáveis ("lembrar este navegador") ─────────────────────
+// Após confirmar o 2FA, o navegador recebe um cookie com token aleatório;
+// o hash fica no banco com validade (padrão 60 dias, env TWOFA_LEMBRAR_DIAS).
+// Enquanto válido, o login pula a etapa do código NAQUELE navegador.
+export const DEVICE_COOKIE = 'evcore_device';
+
+export function diasLembrarDispositivo() {
+  const d = Number(process.env.TWOFA_LEMBRAR_DIAS || 60);
+  return Number.isFinite(d) && d > 0 ? Math.min(d, 365) : 60;
+}
+
+const hashToken = t => crypto.createHash('sha256').update(String(t)).digest('hex');
+
+export async function initDispositivosDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS login_dispositivos (
+      token_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      user_agent TEXT,
+      ip TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      ultimo_uso TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  await pool.query('DELETE FROM login_dispositivos WHERE expires_at < NOW()');
+}
+
+// Registra o navegador como confiável e devolve o valor do cookie.
+export async function confiarDispositivo(userId, req) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const dias = diasLembrarDispositivo();
+  await pool.query(
+    `INSERT INTO login_dispositivos (token_hash, user_id, user_agent, ip, expires_at)
+     VALUES ($1, $2, $3, $4, NOW() + ($5 || ' days')::interval)`,
+    [hashToken(token), userId, String(req.headers['user-agent'] || '').slice(0, 200), getClientIp(req), String(dias)]
+  );
+  const secure = process.env.NODE_ENV !== 'development';
+  const maxAge = dias * 24 * 60 * 60;
+  return `${DEVICE_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+}
+
+// Verifica se o navegador desta requisição é confiável para o usuário.
+export async function dispositivoConfiavel(userId, req) {
+  const m = String(req.headers.cookie || '').match(new RegExp(`${DEVICE_COOKIE}=([^;]+)`));
+  if (!m) return false;
+  const r = await pool.query(
+    `UPDATE login_dispositivos SET ultimo_uso = NOW()
+     WHERE token_hash = $1 AND user_id = $2 AND expires_at > NOW()
+     RETURNING token_hash`,
+    [hashToken(decodeURIComponent(m[1])), userId]
+  );
+  return r.rowCount > 0;
+}
+
+// Revoga todos os dispositivos confiáveis (de um usuário, ou de todos).
+export async function revogarDispositivos(userId = null) {
+  if (userId) { const r = await pool.query('DELETE FROM login_dispositivos WHERE user_id = $1', [userId]); return r.rowCount; }
+  const r = await pool.query('DELETE FROM login_dispositivos');
+  return r.rowCount;
+}
+
 // ── Templates de e-mail ─────────────────────────────────────────────────────
 function baseEmail(conteudo) {
   return `<!doctype html><html lang="pt-BR"><body style="margin:0;background:#f2f5f9;font-family:Arial,sans-serif;padding:24px 0">

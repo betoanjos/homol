@@ -84,6 +84,31 @@ Segurança extra do login (recomendado em produção):
   configurado — Brevo ou SMTP). Para desativar, basta remover a variável.
 - O bloqueio automático por tentativas erradas (anti força-bruta) é sempre
   ativo, sem configuração: 5 erros bloqueiam por 15 min, 10 por 1 hora.
+- "Confiar neste navegador": após confirmar o código uma vez, o navegador
+  fica dispensado do 2FA por 60 dias (ajustável com `TWOFA_LEMBRAR_DIAS`).
+  O vínculo é por navegador (cookie seguro), não por IP. Em caso de
+  suspeita, um admin pode forçar 2FA em todos os navegadores chamando
+  `POST /api/seguranca/revogar-dispositivos` (logado no sistema, via
+  console: `fetch('/api/seguranca/revogar-dispositivos',{method:'POST'})`).
+
+Múltiplos usuários admin (via Variables, com sufixos _2 a _5):
+
+- `EVCORE_ADMIN_USER_2` e `EVCORE_ADMIN_PASSWORD_2` → cria/atualiza o 2º admin.
+- `EVCORE_ADMIN_2FA_EMAIL_2` → e-mail que recebe o código 2FA e os alertas
+  de acesso DESSE usuário (recomendado quando o admin é outra pessoa).
+  Sem ele, o código vai para o LOGIN_2FA_EMAIL global.
+- O mesmo vale para o admin principal com `EVCORE_ADMIN_2FA_EMAIL` (sem sufixo).
+- Para trocar a senha de qualquer usuário: altere a variável e faça redeploy.
+- Para desativar um usuário: remova as variáveis dele e delete a linha na
+  tabela `app_users` (Railway → Postgres → Data).
+
+Usuários SOMENTE LEITURA (veem tudo, geram PDFs, não alteram nada):
+
+- `EVCORE_VIEWER_USER` e `EVCORE_VIEWER_PASSWORD` → cria o usuário leitor
+  (sufixos _2 a _5 para mais leitores).
+- `EVCORE_VIEWER_2FA_EMAIL` → e-mail 2FA/alertas desse leitor (opcional).
+- A restrição é aplicada NO SERVIDOR (qualquer tentativa de gravação recebe
+  403), e a interface esconde os botões de ação e exibe uma faixa indicativa.
 
 ## Passo 5 — Publicar e pegar a URL de teste
 

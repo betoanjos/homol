@@ -12,7 +12,7 @@ import pool from './db.js';
 import { initTupiDB, syncTupi, getSyncStatus, listRecargas, iniciarSyncAgendado } from './tupiSync.js';
 import { fetchSessionUserData, tupiConfig } from './tupi.js';
 import { initAniversariosDB, processarAniversarios, enviarTesteAniversario, statusAniversarios, iniciarAgendadorAniversarios, enviarEmailGenerico, aniversariosConfigurado } from './aniversarios.js';
-import { initSegurancaDB, checarBloqueio, registrarFalhaLogin, limparFalhasLogin, twofaAtivo, twofaEmailDestino, criarOtp, validarOtp, emailCodigoHTML, emailAlertaLoginHTML, getClientIp } from './seguranca.js';
+import { initSegurancaDB, checarBloqueio, registrarFalhaLogin, limparFalhasLogin, twofaAtivo, twofaEmailDestino, criarOtp, validarOtp, emailCodigoHTML, emailAlertaLoginHTML, getClientIp, initDispositivosDB, confiarDispositivo, dispositivoConfiavel, revogarDispositivos, diasLembrarDispositivo } from './seguranca.js';
 
 const app = express();
 app.use(cors());
@@ -156,18 +156,47 @@ async function initAuthDB() {
   `);
 
   await pool.query('DELETE FROM app_sessions WHERE expires_at < NOW()');
+  await pool.query('ALTER TABLE app_users ADD COLUMN IF NOT EXISTS twofa_email TEXT');
 
-  const adminUser = process.env.EVCORE_ADMIN_USER || process.env.ADMIN_USER || 'admin';
-  const adminPassword = process.env.EVCORE_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD;
-
-  if (adminPassword) {
-    const passwordHash = hashPassword(adminPassword);
+  // ── Usuários admin via Variables ──────────────────────────────────────────
+  // Suporta múltiplos admins com sufixos _2, _3, ... (sem sufixo = usuário 1):
+  //   EVCORE_ADMIN_USER / EVCORE_ADMIN_PASSWORD            → admin principal
+  //   EVCORE_ADMIN_USER_2 / EVCORE_ADMIN_PASSWORD_2        → segundo admin
+  //   EVCORE_ADMIN_2FA_EMAIL(_2, _3...) → e-mail que recebe o código 2FA e os
+  //   alertas DESSE usuário (se ausente, usa o LOGIN_2FA_EMAIL global).
+  const sufixos = ['', '_2', '_3', '_4', '_5'];
+  let algumSeed = false;
+  for (const suf of sufixos) {
+    const u = process.env['EVCORE_ADMIN_USER' + suf] || (suf === '' ? (process.env.ADMIN_USER || 'admin') : '');
+    const p = process.env['EVCORE_ADMIN_PASSWORD' + suf] || (suf === '' ? process.env.ADMIN_PASSWORD : '');
+    const mail2fa = (process.env['EVCORE_ADMIN_2FA_EMAIL' + suf] || '').trim() || null;
+    if (!u || !p) continue;
+    algumSeed = true;
     await pool.query(`
-      INSERT INTO app_users (username, password_hash, role)
-      VALUES ($1, $2, 'admin')
-      ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash
-    `, [adminUser, passwordHash]);
-  } else {
+      INSERT INTO app_users (username, password_hash, role, twofa_email)
+      VALUES ($1, $2, 'admin', $3)
+      ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, twofa_email = EXCLUDED.twofa_email
+    `, [String(u).trim(), hashPassword(p), mail2fa]);
+    console.log(`Usuário admin garantido: ${String(u).trim()}${mail2fa ? ' (2FA → ' + mail2fa + ')' : ''}`);
+  }
+
+  // Usuários SOMENTE LEITURA (role 'leitura'): veem tudo, não alteram nada.
+  //   EVCORE_VIEWER_USER / EVCORE_VIEWER_PASSWORD (e _2..._5)
+  //   EVCORE_VIEWER_2FA_EMAIL(_2...) → e-mail 2FA/alertas desse usuário
+  for (const suf of sufixos) {
+    const u = process.env['EVCORE_VIEWER_USER' + suf];
+    const p = process.env['EVCORE_VIEWER_PASSWORD' + suf];
+    const mail2fa = (process.env['EVCORE_VIEWER_2FA_EMAIL' + suf] || '').trim() || null;
+    if (!u || !p) continue;
+    await pool.query(`
+      INSERT INTO app_users (username, password_hash, role, twofa_email)
+      VALUES ($1, $2, 'leitura', $3)
+      ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'leitura', twofa_email = EXCLUDED.twofa_email
+    `, [String(u).trim(), hashPassword(p), mail2fa]);
+    console.log(`Usuário somente leitura garantido: ${String(u).trim()}${mail2fa ? ' (2FA → ' + mail2fa + ')' : ''}`);
+  }
+
+  if (!algumSeed) {
     const existing = await pool.query('SELECT id FROM app_users LIMIT 1');
     if (!existing.rows.length) {
       const tempPassword = crypto.randomBytes(9).toString('base64url');
@@ -199,6 +228,11 @@ async function requireAuth(req, res, next) {
     const user = await getSessionUser(req);
     if (user) {
       req.user = user;
+      // Usuário somente leitura: qualquer método que altera dados é bloqueado
+      // AQUI no servidor (esconder botões no front é cosmético; a segurança é esta).
+      if (user.role === 'leitura' && req.method !== 'GET') {
+        return res.status(403).json({ error: 'Seu usuário é somente leitura — esta ação não é permitida.' });
+      }
       return next();
     }
     if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Não autenticado.' });
@@ -245,6 +279,7 @@ await initAuthDB();
 await initTupiDB();
 await initAniversariosDB();
 await initSegurancaDB();
+await initDispositivosDB();
 if (twofaAtivo() && !aniversariosConfigurado()) {
   console.warn('LOGIN_2FA_EMAIL definido, mas nenhum provedor de e-mail configurado (BREVO_API_KEY ou SMTP). A verificação em duas etapas NÃO funcionará até configurar.');
 } else if (twofaAtivo()) {
@@ -259,16 +294,17 @@ app.get('/login', async (req, res) => {
 });
 
 // Cria a sessão e dispara o alerta de acesso (assíncrono, não bloqueia o login)
-async function concluirLogin(req, res, user) {
+async function concluirLogin(req, res, user, cookiesExtras = []) {
   const token = crypto.randomBytes(32).toString('hex');
   await pool.query(
     `INSERT INTO app_sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + ($3 || ' hours')::interval)`,
     [token, user.id, String(SESSION_MAX_AGE_HOURS)]
   );
-  res.setHeader('Set-Cookie', sessionCookie(token));
+  res.setHeader('Set-Cookie', [sessionCookie(token), ...cookiesExtras]);
 
-  // Camada 3: alerta de acesso (fire-and-forget)
-  const destinoAlerta = twofaEmailDestino();
+  // Camada 3: alerta de acesso (fire-and-forget) — para o e-mail do próprio
+  // usuário quando definido, senão para o e-mail de segurança global
+  const destinoAlerta = user.twofa_email || twofaEmailDestino();
   if (destinoAlerta && aniversariosConfigurado()) {
     const quando = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     enviarEmailGenerico({
@@ -296,7 +332,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(429).json({ error: `Muitas tentativas. Tente novamente em ${bloqueadoMin} minuto(s).` });
     }
 
-    const result = await pool.query('SELECT id, username, password_hash, role FROM app_users WHERE username = $1', [String(username).trim()]);
+    const result = await pool.query('SELECT id, username, password_hash, role, twofa_email FROM app_users WHERE username = $1', [String(username).trim()]);
     const user = result.rows[0];
     if (!user || !verifyPassword(password, user.password_hash)) {
       registrarFalhaLogin(req, username);
@@ -304,15 +340,22 @@ app.post('/api/login', async (req, res) => {
     }
     limparFalhasLogin(req, username);
 
-    // Camada 2: verificação em duas etapas por e-mail (se ativada)
-    if (twofaAtivo()) {
+    // Camada 2: verificação em duas etapas por e-mail (se ativada).
+    // O código vai para o e-mail do PRÓPRIO usuário (twofa_email), com
+    // fallback para o LOGIN_2FA_EMAIL global.
+    const destino2fa = user.twofa_email || twofaEmailDestino();
+    if (twofaAtivo() || user.twofa_email) {
+      // Navegador confiável (2FA confirmado nos últimos N dias) → pula o código
+      if (await dispositivoConfiavel(user.id, req)) {
+        return await concluirLogin(req, res, user);
+      }
       if (!aniversariosConfigurado()) {
         return res.status(500).json({ error: 'Verificação em duas etapas ativa, mas o e-mail não está configurado no servidor.' });
       }
       const { ticket, codigo, validadeMin } = await criarOtp(user.id);
       try {
         await enviarEmailGenerico({
-          para: twofaEmailDestino(),
+          para: destino2fa,
           assunto: `🔐 Código de acesso EV Core: ${codigo}`,
           html: emailCodigoHTML(codigo, validadeMin),
           nomeRemetente: 'EV Core Segurança'
@@ -345,10 +388,18 @@ app.post('/api/login/2fa', async (req, res) => {
       return res.status(401).json({ error: v.erro });
     }
     limparFalhasLogin(req, '2fa');
-    const result = await pool.query('SELECT id, username, role FROM app_users WHERE id = $1', [v.userId]);
+    const result = await pool.query('SELECT id, username, role, twofa_email FROM app_users WHERE id = $1', [v.userId]);
     const user = result.rows[0];
     if (!user) return res.status(401).json({ error: 'Usuário não encontrado.' });
-    return await concluirLogin(req, res, user);
+
+    // "Lembrar este navegador": grava o dispositivo confiável e envia o
+    // cookie junto com o da sessão (por padrão lembra, a menos que desmarque).
+    const cookies = [];
+    if (req.body?.lembrar !== false) {
+      try { cookies.push(await confiarDispositivo(user.id, req)); }
+      catch (e) { console.warn('Falha ao registrar dispositivo confiável:', e.message); }
+    }
+    return await concluirLogin(req, res, user, cookies);
   } catch (err) {
     console.error('Erro na verificação em duas etapas:', err);
     return res.status(500).json({ error: 'Erro na verificação.' });
@@ -395,6 +446,16 @@ app.post('/api/state', async (req, res) => {
   }
 });
 
+
+// Revoga os dispositivos confiáveis (força 2FA em todos os navegadores no
+// próximo login). Sem corpo = todos os usuários. Uso: em caso de suspeita.
+app.post('/api/seguranca/revogar-dispositivos', async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Apenas administradores.' });
+    const n = await revogarDispositivos();
+    res.json({ ok: true, revogados: n, mensagem: 'Todos os navegadores precisarão do código 2FA no próximo login.' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ===== Aniversários (e-mail automático com recarga grátis) =====
 

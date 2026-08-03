@@ -110,7 +110,53 @@ async function loadState() {
   }
 }
 
+// ─── Modo somente leitura ────────────────────────────────────────────────────
+let usuarioAtual = null; // { username, role }
+
+async function carregarUsuarioAtual() {
+  try {
+    const res = await fetch('/api/me');
+    const data = await res.json();
+    usuarioAtual = data?.user || null;
+    if (usuarioAtual?.role === 'leitura') ativarModoLeitura();
+  } catch (e) { /* silencioso */ }
+}
+
+function isSomenteLeitura() {
+  return usuarioAtual?.role === 'leitura';
+}
+
+function ativarModoLeitura() {
+  document.body.classList.add('modo-leitura');
+  // Faixa fixa informativa no topo
+  if (!document.getElementById('faixa-leitura')) {
+    const faixa = document.createElement('div');
+    faixa.id = 'faixa-leitura';
+    faixa.innerHTML = '👁️ <strong>Modo somente leitura</strong> — você pode visualizar tudo e gerar PDFs, mas não pode alterar dados.';
+    faixa.style.cssText = 'position:sticky;top:0;z-index:9999;background:#1a2436;border-bottom:1px solid #3b82f6;color:#bfdbfe;font-size:13px;text-align:center;padding:8px 14px';
+    document.body.prepend(faixa);
+  }
+  // Ocultar botões de ação (cosmético — a trava real está no servidor)
+  const css = document.createElement('style');
+  css.textContent = `
+    .modo-leitura [onclick*="salvar"], .modo-leitura [onclick*="Salvar"],
+    .modo-leitura [onclick*="deletar"], .modo-leitura [onclick*="excluir"], .modo-leitura [onclick*="Excluir"],
+    .modo-leitura [onclick*="openModal"], .modo-leitura [onclick*="criar"], .modo-leitura [onclick*="Criar"],
+    .modo-leitura [onclick*="importar"], .modo-leitura [onclick*="Importar"],
+    .modo-leitura [onclick*="sync"], .modo-leitura [onclick*="corrigir"],
+    .modo-leitura [onclick*="editarCampo"], .modo-leitura [onclick*="remover"],
+    .modo-leitura input[type="file"], .modo-leitura .btn-danger { display: none !important; }
+  `;
+  document.head.appendChild(css);
+}
+carregarUsuarioAtual();
+
 function saveState() {
+  // Usuário somente leitura: nunca envia gravações (o servidor também bloqueia).
+  if (isSomenteLeitura()) {
+    console.warn('saveState ignorado: usuário somente leitura.');
+    return Promise.resolve();
+  }
   // Trava de segurança: se o estado ainda não foi carregado do servidor,
   // não gravamos nada para não sobrescrever o banco com dados vazios/parciais.
   if (!estadoCarregado) {

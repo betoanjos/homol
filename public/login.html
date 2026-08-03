@@ -33,6 +33,10 @@
       <label for="codigo">Código de verificação</label>
       <input id="codigo" name="codigo" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" autocomplete="one-time-code" style="text-align:center;letter-spacing:10px;font-size:22px;font-weight:700" />
       <div style="font-size:12px;color:var(--text2);margin-top:8px">Enviamos um código de 6 dígitos para o e-mail de segurança. Ele vale por 10 minutos.</div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:14px;text-transform:none;letter-spacing:0;font-weight:400;font-size:13px;color:var(--text2);cursor:pointer">
+        <input type="checkbox" id="lembrar" checked style="width:auto" />
+        Confiar neste navegador (não pedir o código por 60 dias)
+      </label>
     </div>
     <button id="btn" type="submit">Entrar</button>
     <div class="error" id="error"></div>
@@ -54,7 +58,7 @@
           res = await fetch('/api/login/2fa', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ticket: ticket2fa, codigo: document.getElementById('codigo').value.trim() })
+            body: JSON.stringify({ ticket: ticket2fa, codigo: document.getElementById('codigo').value.trim(), lembrar: document.getElementById('lembrar').checked })
           });
           data = await res.json().catch(() => ({}));
           if (!res.ok) {

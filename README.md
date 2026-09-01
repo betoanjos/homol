@@ -80,3 +80,35 @@ cliente/parceiro no faturamento é o `document` (CPF/CNPJ) retornado no user-dat
 ## Observação importante
 
 Esta versão ainda salva dados principalmente no navegador/localStorage. Para uso multiusuário/produção final, o próximo passo recomendado é migrar dados para banco persistente, como PostgreSQL.
+
+## Módulo de Contratos e ZapSign
+
+O menu **Gestão > Contratos** utiliza os parceiros e estações já cadastrados apenas para preenchimento. Contratos, signatários, PDFs e eventos são armazenados em tabelas próprias no PostgreSQL e não alteram o `app_state`.
+
+Para homologar sem enviar documentos reais:
+
+```env
+CONTRACTS_SIGNATURE_MODE=simulator
+EVPARKING_SIGNER_NAME=Roberto Nascimento Anjos
+EVPARKING_SIGNER_CPF=046.463.569-10
+EVPARKING_SIGNER_EMAIL=assinatura@seudominio.com.br
+EVPARKING_SIGNER_PHONE=47999999999
+ZAPSIGN_WEBHOOK_SECRET=gere-um-segredo-longo-e-aleatorio
+```
+
+Para ativar a ZapSign depois de validar o fluxo:
+
+```env
+CONTRACTS_SIGNATURE_MODE=zapsign
+ZAPSIGN_API_TOKEN=seu-token-da-api-zapsign
+ZAPSIGN_AUTH_MODE=assinaturaTela-tokenEmail
+ZAPSIGN_WEBHOOK_SECRET=mesmo-segredo-configurado-no-header-do-webhook
+```
+
+Cadastre na ZapSign o webhook:
+
+```text
+https://SEU-DOMINIO/api/webhooks/zapsign
+```
+
+Configure o header `Authorization` do webhook com o valor exato de `ZAPSIGN_WEBHOOK_SECRET`.

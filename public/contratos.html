@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Contratos | EVCore</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style>
+    :root{--bg:#0b111b;--surface:#121b29;--surface2:#172334;--border:#26364c;--text:#e8eef8;--muted:#91a2b8;--accent:#37d67a;--blue:#4b8cff;--red:#ef5b67;--yellow:#f6c453;--radius:12px}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px Inter,Segoe UI,Arial,sans-serif}button,input,select,textarea{font:inherit}
+    .top{height:68px;background:#0e1724;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 24px;gap:16px;position:sticky;top:0;z-index:10}.brand{font-size:20px;font-weight:800;color:var(--accent)}.top h1{font-size:17px;margin:0}.spacer{flex:1}.container{max-width:1450px;margin:0 auto;padding:24px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:18px}.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px}.btn{border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);background:var(--surface2);cursor:pointer;font-weight:650}.btn:hover{filter:brightness(1.12)}.btn:disabled{opacity:.45;cursor:not-allowed}.btn-primary{background:var(--accent);border-color:var(--accent);color:#06130b}.btn-blue{background:var(--blue);border-color:var(--blue);color:white}.btn-danger{background:#3b1720;border-color:#6c2633;color:#ffabb3}.btn-sm{padding:7px 10px;font-size:12px}
+    input,select,textarea{width:100%;background:#0d1623;border:1px solid var(--border);border-radius:8px;color:var(--text);padding:10px 11px;outline:none}input:focus,select:focus,textarea:focus{border-color:var(--blue)}textarea{min-height:86px;resize:vertical}label{display:block;color:var(--muted);font-size:12px;font-weight:650;margin-bottom:6px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.full{grid-column:1/-1}.span2{grid-column:span 2}.section{font-weight:800;font-size:14px;margin:24px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border);color:#c9d6e7}.section:first-child{margin-top:0}.hint{color:var(--muted);font-size:12px}.summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:16px 0}.metric{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px}.metric b{display:block;font-size:17px;margin-top:5px}.metric span{color:var(--muted);font-size:11px}
+    table{border-collapse:collapse;width:100%}th,td{text-align:left;border-bottom:1px solid var(--border);padding:12px 10px;vertical-align:middle}th{font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:.04em}tr:last-child td{border-bottom:0}.badge{display:inline-block;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:750;background:#25354b;color:#c9d6e7}.badge-green{background:#123824;color:#73e6a4}.badge-blue{background:#172f59;color:#8bb5ff}.badge-yellow{background:#443515;color:#f9d878}.badge-red{background:#482029;color:#ff9ba5}.empty{text-align:center;padding:44px;color:var(--muted)}
+    .editor{display:none}.editor.open{display:block}.list.hidden{display:none}.editor-head{display:flex;gap:12px;align-items:flex-start;margin-bottom:18px}.editor-head h2{margin:0 0 4px;font-size:20px}.actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.statusline{margin:12px 0;padding:11px 13px;border:1px solid var(--border);background:var(--surface2);border-radius:8px;color:var(--muted)}.toast{position:fixed;right:20px;bottom:20px;max-width:420px;background:#18263a;border:1px solid var(--border);border-radius:10px;padding:14px 16px;box-shadow:0 14px 40px #0008;display:none;z-index:99}.toast.error{border-color:var(--red);color:#ffc2c7}.toast.ok{border-color:var(--accent);color:#b9f7d2}
+    .audit{margin-top:18px}.audit-item{border-left:2px solid var(--border);padding:2px 0 12px 12px;color:var(--muted);font-size:12px}.audit-item b{color:var(--text)}
+    @media(max-width:1000px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.summary{grid-template-columns:repeat(3,1fr)}}@media(max-width:650px){.container{padding:14px}.grid{grid-template-columns:1fr}.span2{grid-column:auto}.summary{grid-template-columns:repeat(2,1fr)}.top{padding:0 14px}.top h1{display:none}.editor-head{display:block}.actions{justify-content:flex-start;margin-top:12px}th:nth-child(3),td:nth-child(3){display:none}}
+  </style>
+</head>
+<body>
+  <header class="top"><div class="brand">⚡ evcore</div><h1>Contratos e Assinaturas</h1><div class="spacer"></div><button class="btn btn-sm" onclick="location.href='/'">← Voltar ao EVCore</button></header>
+  <main class="container">
+    <section class="list" id="list-view">
+      <div class="toolbar">
+        <div><h2 style="margin:0 0 4px">Contratos</h2><div class="hint">Geração parametrizada, assinatura ZapSign e histórico de auditoria.</div></div>
+        <div class="spacer"></div>
+        <select id="filter-status" onchange="loadContracts()" style="width:210px"><option value="">Todos os status</option><option value="rascunho">Rascunho</option><option value="em_revisao">Em revisão</option><option value="aprovado">Aprovado</option><option value="aguardando_assinaturas">Aguardando assinaturas</option><option value="parcialmente_assinado">Parcialmente assinado</option><option value="concluido">Concluído</option><option value="cancelado">Cancelado</option></select>
+        <button class="btn btn-primary admin-action" onclick="newContract()">＋ Novo contrato</button>
+      </div>
+      <div class="card" style="overflow:auto"><table><thead><tr><th>Número</th><th>Parceiro</th><th>Status</th><th>Criado em</th><th>Arquivos</th><th>Ações</th></tr></thead><tbody id="contracts-body"></tbody></table><div class="empty" id="contracts-empty">Nenhum contrato cadastrado.</div></div>
+    </section>
+
+    <section class="editor" id="editor-view">
+      <div class="editor-head"><div><button class="btn btn-sm" onclick="closeEditor()">← Lista</button></div><div><h2 id="editor-title">Novo contrato</h2><div class="hint" id="editor-sub">Preencha e salve o rascunho antes de gerar o PDF.</div></div><div class="spacer"></div><div class="actions"><button class="btn admin-action" id="btn-save" onclick="saveContract()">Salvar rascunho</button><button class="btn btn-blue admin-action" id="btn-pdf" onclick="generateAndUploadPdf()" disabled>Gerar PDF</button><button class="btn admin-action" id="btn-approve" onclick="approveContract()" disabled>Aprovar</button><button class="btn btn-primary admin-action" id="btn-send" onclick="sendContract()" disabled>Enviar ZapSign</button><button class="btn admin-action" id="btn-simulate" onclick="simulateComplete()" style="display:none">Simular conclusão</button></div></div>
+      <div class="statusline" id="contract-status">Status: novo rascunho</div>
+      <div class="card">
+        <form id="contract-form" onsubmit="event.preventDefault();saveContract()">
+          <div class="section">Parceiro e representação</div>
+          <div class="grid">
+            <div class="span2"><label>Parceiro cadastrado *</label><select id="parceiroId" onchange="partnerChanged()"><option value="">Selecione</option></select></div>
+            <div class="span2"><label>Estação vinculada</label><select id="estacaoId" onchange="stationChanged()"><option value="">Selecione</option></select></div>
+            <div class="span2"><label>Razão social *</label><input id="razaoSocial" maxlength="300"></div><div class="span2"><label>Nome fantasia</label><input id="nomeFantasia" maxlength="300"></div>
+            <div><label>CPF/CNPJ *</label><input id="cnpj" maxlength="30"></div><div><label>Inscrição Estadual</label><input id="inscricaoEstadual" maxlength="40"></div><div class="span2"><label>Endereço do parceiro *</label><input id="enderecoParceiro" maxlength="500"></div>
+            <div class="span2"><label>Representante legal *</label><input id="representanteNome" maxlength="250"></div><div><label>CPF do representante *</label><input id="representanteCpf" maxlength="30"></div><div><label>Telefone</label><input id="representanteTelefone" maxlength="40"></div>
+            <div class="span2"><label>E-mail para assinatura *</label><input type="email" id="representanteEmail" maxlength="254"></div><div class="span2"><label>Endereço da estação *</label><input id="enderecoEstacao" maxlength="500"></div>
+          </div>
+
+          <div class="section">Configuração técnica</div>
+          <div class="grid">
+            <div><label>Fabricante</label><input id="fabricante" value="WEG"></div><div><label>Modelo</label><input id="modelo" value="WEMOB Station"></div><div><label>Potência nominal (kW)</label><input type="number" id="potenciaKw" min="1" step="1" value="40"></div><div><label>Potência operacional (kW)</label><input type="number" id="potenciaOperacionalKw" min="1" step="1" value="40"></div>
+            <div><label>Conector</label><input id="conectores" value="CCS2"></div><div><label>Quantidade de saídas</label><input type="number" id="quantidadeSaidas" min="1" value="1"></div><div><label>Vagas dedicadas</label><input type="number" id="quantidadeVagas" min="1" value="1"></div><div><label>Tensão trifásica (V)</label><input type="number" id="tensaoV" value="380"></div>
+            <div><label>Disjuntor (A)</label><input type="number" id="disjuntorA" min="0" placeholder="Deixe vazio para dimensionar em projeto"></div><div><label>Internet mínima (Mbps)</label><input type="number" id="internetMbps" min="1" value="20"></div><div><label>Operação</label><select id="operacao24h"><option value="true">24 horas / 7 dias</option><option value="false">Horário do local</option></select></div>
+          </div>
+
+          <div class="section">Condições contratuais e financeiras</div>
+          <div class="grid">
+            <div><label>Data do contrato</label><input type="date" id="dataContrato"></div><div><label>Foro</label><input id="cidadeForo" value="São Bento do Sul - SC"></div><div><label>Prazo mínimo (meses)</label><input type="number" id="prazoMeses" min="1" value="48"></div><div><label>Aviso prévio (dias)</label><input type="number" id="avisoPrevioDias" min="1" value="90"></div>
+            <div><label>Investimento estimado (R$)</label><input type="number" id="investimento" min="0" step="0.01"></div><div><label>Custo da energia (R$/kWh)</label><input type="number" id="custoEnergia" min="0" step="0.001" value="0.94"></div><div><label>Preço cobrado (R$/kWh)</label><input type="number" id="precoKwh" min="0" step="0.01" value="1.99"></div><div><label>Taxa operacional fixa (%)</label><input type="number" id="taxaOperacionalPct" min="0" max="100" step="0.01" value="22"></div>
+            <div><label>Comissão do parceiro (%)</label><input type="number" id="comissaoPct" min="0" max="100" step="0.01" value="12"></div><div><label>Recargas mensais estimadas</label><input type="number" id="recargasMensais" min="0" value="160"></div><div><label>Consumo médio/recarga (kWh)</label><input type="number" id="consumoMedioKwh" min="0" step="0.01" value="25"></div>
+            <div class="full"><label>Observações específicas</label><textarea id="observacoes" maxlength="2000"></textarea></div>
+          </div>
+          <div class="summary" id="financial-summary"></div>
+        </form>
+      </div>
+      <div class="card audit" id="audit-card" style="display:none"><div class="section" style="margin-top:0">Histórico</div><div id="audit-list"></div></div>
+    </section>
+  </main>
+  <div class="toast" id="toast"></div>
+  <script src="contratos-template.js"></script>
+  <script src="contratos.js"></script>
+</body>
+</html>

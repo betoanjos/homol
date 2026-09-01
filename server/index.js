@@ -13,6 +13,7 @@ import { initTupiDB, syncTupi, getSyncStatus, listRecargas, iniciarSyncAgendado 
 import { fetchSessionUserData, tupiConfig } from './tupi.js';
 import { initAniversariosDB, processarAniversarios, enviarTesteAniversario, statusAniversarios, iniciarAgendadorAniversarios, enviarEmailGenerico, aniversariosConfigurado } from './aniversarios.js';
 import { initSegurancaDB, checarBloqueio, registrarFalhaLogin, limparFalhasLogin, twofaAtivo, twofaEmailDestino, criarOtp, validarOtp, emailCodigoHTML, emailAlertaLoginHTML, getClientIp, initDispositivosDB, confiarDispositivo, dispositivoConfiavel, revogarDispositivos, diasLembrarDispositivo } from './seguranca.js';
+import { initContratosDB, criarContratosRouter, receberWebhookZapSign, exportarContratosBackup } from './contratos/index.js';
 
 const app = express();
 app.use(cors());
@@ -21,6 +22,7 @@ app.use(cors());
 const jsonPadrao = express.json({ limit: '2mb' });
 app.use((req, res, next) => {
   if (req.path === '/api/parceiros/arquivos') return next();
+  if (req.path.startsWith('/api/contracts/') && req.path.endsWith('/pdf')) return next();
   return jsonPadrao(req, res, next);
 });
 
@@ -106,8 +108,9 @@ async function criarBackupAutomatico(motivo = 'automatico') {
   const stamp = backupStamp();
   const result = await pool.query('SELECT data FROM app_state WHERE id = 1');
   const state = result.rows[0]?.data || {};
+  const contratos = await exportarContratosBackup();
   const jsonFile = path.join(BACKUP_DIR, `evparking-backup-${stamp}.json`);
-  await fs.writeFile(jsonFile, JSON.stringify({ criadoEm: new Date().toISOString(), motivo, state }, null, 2));
+  await fs.writeFile(jsonFile, JSON.stringify({ criadoEm: new Date().toISOString(), motivo, state, contratos }, null, 2));
 
   let dumpFile = null;
   let dumpOk = false;
@@ -224,7 +227,7 @@ async function getSessionUser(req) {
 
 async function requireAuth(req, res, next) {
   try {
-    if (PUBLIC_PATHS.has(req.path) || req.path.startsWith('/api/webhooks/mercadopago')) return next();
+    if (PUBLIC_PATHS.has(req.path) || req.path.startsWith('/api/webhooks/mercadopago') || req.path.startsWith('/api/webhooks/zapsign')) return next();
     const user = await getSessionUser(req);
     if (user) {
       req.user = user;
@@ -280,6 +283,7 @@ await initTupiDB();
 await initAniversariosDB();
 await initSegurancaDB();
 await initDispositivosDB();
+await initContratosDB();
 if (twofaAtivo() && !aniversariosConfigurado()) {
   console.warn('LOGIN_2FA_EMAIL definido, mas nenhum provedor de e-mail configurado (BREVO_API_KEY ou SMTP). A verificação em duas etapas NÃO funcionará até configurar.');
 } else if (twofaAtivo()) {
@@ -423,7 +427,15 @@ app.get('/api/me', async (req, res) => {
   return res.json({ authenticated: !!user, user: user ? { username: user.username, role: user.role } : null });
 });
 
+// Webhook público da ZapSign. A autenticação é feita por segredo dedicado
+// dentro do handler; ele nunca utiliza a sessão do usuário do EVCore.
+app.post('/api/webhooks/zapsign', receberWebhookZapSign);
+
 app.use(requireAuth);
+
+// Módulo isolado de contratos. Usa tabelas próprias e apenas consulta o
+// app_state para preencher parceiros e estações existentes.
+app.use('/api/contracts', criarContratosRouter());
 
 
 app.get('/api/state', async (req, res) => {

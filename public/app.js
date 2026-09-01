@@ -3935,6 +3935,7 @@ function renderParceiros() {
           <div style="font-size:11px;color:var(--text3);margin-top:2px">${(p.equipamentos || []).map(escapeHtml).join(' · ')}</div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+          <button class="btn btn-secondary btn-sm" onclick="location.href='/contratos.html?parceiroId=${encodeURIComponent(p.id)}'">✍️ Contrato</button>
           <button class="btn btn-primary btn-sm" onclick="gerarPDFParceiro('${p.id}')">📄 Gerar PDF</button>
           <button class="btn btn-secondary btn-sm" onclick="openModalParceiro('${p.id}')">✏️ Editar</button>
           <button class="btn btn-danger btn-sm" onclick="deletarParceiro('${p.id}')">🗑️</button>

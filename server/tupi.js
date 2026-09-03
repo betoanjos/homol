@@ -56,7 +56,11 @@ async function fetchSessionsPage({ limit = 100, offset = 0, dateFrom, dateTo } =
   const url = `${base}/${version}/sessions?${params.toString()}`;
   const { body, headers } = await tupiFetch(url);
   const data = Array.isArray(body?.data) ? body.data : [];
-  const totalCount = Number(headers.get('X-Total-Count'));
+  // Cuidado: header ausente faz headers.get() devolver null, e Number(null) é 0
+  // — um zero finito, que fazia a paginação parar na primeira página e truncar
+  // o sync inteiro em silêncio. Só aceitamos um número quando veio de fato.
+  const bruto = headers.get('X-Total-Count');
+  const totalCount = bruto == null || String(bruto).trim() === '' ? NaN : Number(bruto);
   return {
     data,
     total: Number.isFinite(totalCount) ? totalCount : null,

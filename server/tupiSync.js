@@ -5,6 +5,7 @@
 
 import pool from './db.js';
 import { fetchAllSessions, fetchSessionUserData, tupiConfigurado, tupiConfig } from './tupi.js';
+import { toRecarga } from './tupiFormato.js';
 
 const SYNC_INTERVAL_MIN = Number(process.env.TUPI_SYNC_INTERVAL_MIN || 60);
 const INITIAL_DAYS = Number(process.env.TUPI_SYNC_INITIAL_DAYS || 30);
@@ -277,43 +278,9 @@ export async function listRecargas({ dateFrom, dateTo, status, incluirZerados = 
 }
 
 // Mapeia a linha do banco para o formato "recarga" do EVP.
-// Observação: a API Tupi NÃO fornece placa; a chave de vínculo com cliente/parceiro é o `document`.
-export function toRecarga(row) {
-  return {
-    id: row.id,
-    // uid = chave de deduplicação unificada CSV<->API.
-    // Confirmado com dados reais: API `id` == coluna "ID da Transação" do CSV.
-    uid: String(row.id),
-    stationId: row.location_id,
-    evseUid: row.evse_uid,
-    connectorId: row.connector_id,
-    autorizacao: row.authorization_reference,
-    authMethod: row.auth_method,
-    status: row.status,
-    dataInicio: row.start_date_time,
-    dataFim: row.end_date_time,
-    kwh: row.kwh != null ? Number(row.kwh) : null,
-    moeda: row.currency,
-    custoApiSemImposto: row.total_cost_excl_vat != null ? Number(row.total_cost_excl_vat) : null,
-    custoApiComImposto: row.total_cost_incl_vat != null ? Number(row.total_cost_incl_vat) : null,
-    cliente: {
-      nome: row.name || null,
-      documento: row.document || null,
-      email: row.email || null,
-      endereco: row.name || row.city ? {
-        logradouro: row.street_name || null,
-        numero: row.number || null,
-        bairro: row.district || null,
-        cidade: row.city || null,
-        uf: row.state || null,
-        cep: row.zip_code || null
-      } : null,
-      veiculos: row.cars || null,
-      encontrado: Boolean(row.user_found)
-    },
-    lastUpdated: row.last_updated
-  };
-}
+// A implementação vive em tupiFormato.js (lógica pura, testável sem banco);
+// segue reexportada aqui porque este é o ponto de importação já usado.
+export { toRecarga };
 
 export function iniciarSyncAgendado() {
   if (!tupiConfigurado()) {

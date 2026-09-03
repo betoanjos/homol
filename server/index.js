@@ -14,6 +14,7 @@ import { fetchSessionUserData, tupiConfig } from './tupi.js';
 import { initAniversariosDB, processarAniversarios, enviarTesteAniversario, statusAniversarios, iniciarAgendadorAniversarios, enviarEmailGenerico, aniversariosConfigurado } from './aniversarios.js';
 import { initSegurancaDB, checarBloqueio, registrarFalhaLogin, limparFalhasLogin, twofaAtivo, twofaEmailDestino, criarOtp, validarOtp, emailCodigoHTML, emailAlertaLoginHTML, getClientIp, initDispositivosDB, confiarDispositivo, dispositivoConfiavel, revogarDispositivos, diasLembrarDispositivo } from './seguranca.js';
 import { initContratosDB, criarContratosRouter, receberWebhookZapSign, exportarContratosBackup } from './contratos/index.js';
+import { initEstadoDB, lerEstado, lerEstadoData, salvarEstado, mutarEstado, listarHistorico, lerVersaoHistorico, restaurarVersao, ConflitoDeVersao, EstadoSuspeito } from './estado.js';
 
 const app = express();
 app.use(cors());
@@ -106,8 +107,7 @@ async function limparBackupsAntigos() {
 async function criarBackupAutomatico(motivo = 'automatico') {
   await ensureBackupDir();
   const stamp = backupStamp();
-  const result = await pool.query('SELECT data FROM app_state WHERE id = 1');
-  const state = result.rows[0]?.data || {};
+  const state = await lerEstadoData();
   const contratos = await exportarContratosBackup();
   const jsonFile = path.join(BACKUP_DIR, `evparking-backup-${stamp}.json`);
   await fs.writeFile(jsonFile, JSON.stringify({ criadoEm: new Date().toISOString(), motivo, state, contratos }, null, 2));
@@ -247,21 +247,6 @@ async function requireAuth(req, res, next) {
 }
 
 
-async function initStateDB() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS app_state (
-      id INTEGER PRIMARY KEY,
-      data JSONB NOT NULL DEFAULT '{}'::jsonb
-    );
-  `);
-
-  await pool.query(`
-    INSERT INTO app_state (id, data)
-    VALUES (1, '{}'::jsonb)
-    ON CONFLICT (id) DO NOTHING;
-  `);
-}
-
 async function initParceiroArquivosDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS parceiro_arquivos (
@@ -277,7 +262,7 @@ async function initParceiroArquivosDB() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_parceiro_arquivos_pid ON parceiro_arquivos (parceiro_id);`);
 }
 
-await initStateDB();
+await initEstadoDB();
 await initAuthDB();
 await initTupiDB();
 await initAniversariosDB();
@@ -438,10 +423,13 @@ app.use(requireAuth);
 app.use('/api/contracts', criarContratosRouter());
 
 
+// O estado vem com __version: a versão que esta leitura enxergou. O cliente
+// devolve esse número no POST para que gravações em cima de dados velhos
+// sejam recusadas em vez de apagarem o trabalho de outra sessão.
 app.get('/api/state', async (req, res) => {
   try {
-    const result = await pool.query('SELECT data FROM app_state WHERE id = 1');
-    res.json(result.rows[0]?.data || {});
+    const { data, version, updatedAt, updatedBy } = await lerEstado();
+    res.json({ ...data, __version: version, __updatedAt: updatedAt, __updatedBy: updatedBy });
   } catch (err) {
     console.error('Erro ao carregar estado:', err);
     res.status(500).json({ error: 'Erro ao carregar dados.' });
@@ -450,11 +438,62 @@ app.get('/api/state', async (req, res) => {
 
 app.post('/api/state', async (req, res) => {
   try {
-    await pool.query('UPDATE app_state SET data = $1 WHERE id = 1', [req.body || {}]);
-    res.json({ ok: true });
+    const corpo = req.body || {};
+    // Metadados de controle não são persistidos junto com o estado.
+    const { __version, __updatedAt, __updatedBy, __forcar, ...estado } = corpo;
+    const resultado = await salvarEstado(estado, {
+      baseVersion: __version == null ? null : Number(__version),
+      usuario: req.user?.username || null,
+      motivo: 'api',
+      forcar: __forcar === true
+    });
+    res.json({ ok: true, version: resultado.version, updatedAt: resultado.updatedAt });
   } catch (err) {
+    if (err instanceof ConflitoDeVersao) {
+      return res.status(409).json({
+        error: err.message,
+        conflito: true,
+        versaoAtual: err.versaoAtual,
+        estadoAtual: { ...err.estadoAtual, __version: err.versaoAtual }
+      });
+    }
+    if (err instanceof EstadoSuspeito) {
+      return res.status(422).json({ error: err.message, suspeito: true, perdas: err.perdas });
+    }
     console.error('Erro ao salvar estado:', err);
-    res.status(500).json({ error: 'Erro ao salvar dados.' });
+    res.status(err.status || 500).json({ error: err.status ? err.message : 'Erro ao salvar dados.' });
+  }
+});
+
+// Histórico de versões do estado — permite auditar e desfazer uma gravação
+// ruim sem esperar/restaurar o backup de 6 horas.
+app.get('/api/state/historico', async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Apenas administradores.' });
+    res.json({ versoes: await listarHistorico(req.query.limite) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/state/historico/:version', async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Apenas administradores.' });
+    const versao = await lerVersaoHistorico(req.params.version);
+    if (!versao) return res.status(404).json({ error: 'Versão não encontrada.' });
+    res.json(versao);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/state/restaurar/:version', async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Apenas administradores.' });
+    const r = await restaurarVersao(req.params.version, { usuario: req.user?.username || null });
+    res.json({ ok: true, ...r });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -559,8 +598,7 @@ app.get('/api/tupi/diagnostico', async (req, res) => {
     )).rows;
 
     // 2) Lado EV Core: recargas do estado de negócio para a mesma estação/período.
-    const stateRow = await pool.query('SELECT data FROM app_state WHERE id = 1');
-    const state = stateRow.rows[0]?.data || {};
+    const state = await lerEstadoData();
     const todasRecargas = Array.isArray(state.recargas) ? state.recargas : [];
     const noPeriodo = (dataStr) => {
       const d = String(dataStr || '').slice(0, 10); // "YYYY-MM-DD"
@@ -1049,33 +1087,37 @@ app.post('/api/webhooks/mercadopago', async (req, res) => {
     memoria.set(String(paymentId), { ...atual, ...status });
 
     if (status.paid) {
-      const result = await pool.query('SELECT data FROM app_state WHERE id = 1');
-      const data = result.rows[0]?.data || {};
-      let atualizou = false;
+      // Read-modify-write sob lock: sem isso, um save do painel entre a
+      // leitura e a gravação apagava a baixa do pagamento (ou vice-versa).
+      const { alterado } = await mutarEstado(data => {
+        let atualizou = false;
 
-      data.faturas = (data.faturas || []).map(f => {
-        if (
-          String(f.pixPaymentId || '') === String(paymentId) ||
-          String(f.paymentId || '') === String(paymentId) ||
-          String(f.pixTxid || '') === String(paymentId) ||
-          String(f.id || '') === String(status.externalReference || '') ||
-          String(f.numero || '') === String(status.externalReference || '')
-        ) {
-          atualizou = true;
-          return {
-            ...f,
-            status: 'pago',
-            pago: true,
-            paid: true,
-            pixStatus: 'APPROVED',
-            dataPagamento: status.dateApproved || new Date().toISOString()
-          };
-        }
-        return f;
-      });
+        data.faturas = (data.faturas || []).map(f => {
+          if (
+            String(f.pixPaymentId || '') === String(paymentId) ||
+            String(f.paymentId || '') === String(paymentId) ||
+            String(f.pixTxid || '') === String(paymentId) ||
+            String(f.id || '') === String(status.externalReference || '') ||
+            String(f.numero || '') === String(status.externalReference || '')
+          ) {
+            atualizou = true;
+            return {
+              ...f,
+              status: 'pago',
+              pago: true,
+              paid: true,
+              pixStatus: 'APPROVED',
+              dataPagamento: status.dateApproved || new Date().toISOString()
+            };
+          }
+          return f;
+        });
 
-      if (atualizou) {
-        await pool.query('UPDATE app_state SET data = $1 WHERE id = 1', [data]);
+        // Devolver null aborta a transação sem gravar nem versionar.
+        return atualizou ? data : null;
+      }, { usuario: 'webhook-mercadopago', motivo: `pagamento-${paymentId}` });
+
+      if (alterado) {
         console.log('Fatura atualizada no banco via webhook:', { paymentId, externalReference: status.externalReference });
       } else {
         console.log('Webhook recebido, mas nenhuma fatura foi encontrada para atualizar:', { paymentId, externalReference: status.externalReference });

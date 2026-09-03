@@ -24,6 +24,7 @@
 // O controle de envio fica na tabela aniversario_envios (1 envio por cliente/ano).
 
 import pool from './db.js';
+import { lerEstadoData } from './estado.js';
 
 const TZ = 'America/Sao_Paulo';
 
@@ -216,8 +217,7 @@ async function enviarEmail({ para, nome, nomeRede }) {
 }
 
 async function carregarClientes() {
-  const r = await pool.query('SELECT data FROM app_state WHERE id = 1');
-  const data = r.rows[0]?.data || {};
+  const data = await lerEstadoData();
   const nomeRede = data?.configuracoesRede?.nomeRede || 'EV Parking';
   return { clientes: Array.isArray(data.clientes) ? data.clientes : [], nomeRede };
 }

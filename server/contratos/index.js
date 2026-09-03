@@ -1,6 +1,7 @@
 import express from 'express';
 import crypto from 'crypto';
 import pool from '../db.js';
+import { lerEstadoData } from '../estado.js';
 import { assinaturaConfig, criarDocumentoZapSign, detalharDocumentoZapSign, baixarArquivoZapSign } from './zapsign.js';
 import { calcularPremissas, normalizarDadosContrato, validarDadosContrato } from './validacao.js';
 
@@ -157,8 +158,7 @@ export function criarContratosRouter() {
 
   router.get('/meta', async (_req, res) => {
     try {
-      const r = await pool.query('SELECT data FROM app_state WHERE id = 1');
-      const state = r.rows[0]?.data || {};
+      const state = await lerEstadoData();
       res.json({
         parceiros: Array.isArray(state.parceiros) ? state.parceiros : [],
         estacoes: Array.isArray(state.estacoes) ? state.estacoes : [],

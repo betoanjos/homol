@@ -48,6 +48,9 @@ async function loadState() {
     if (res.status === 401) { window.location.href = '/login'; return; }
     if (!res.ok) throw new Error('Falha ao carregar dados do servidor');
     const data = await res.json();
+    // Versão do documento no servidor. Volta no próximo POST para que uma
+    // gravação em cima de dados desatualizados seja recusada (409).
+    stateVersion = data.__version ?? null;
     clientes = data.clientes || clientes || [];
     gruposClientes = Array.isArray(data.gruposClientes) ? data.gruposClientes : [];
     // Grupos iniciais sugeridos (só na primeira vez, editáveis depois)
@@ -151,6 +154,26 @@ function ativarModoLeitura() {
 }
 carregarUsuarioAtual();
 
+// ─── Gravação do estado ──────────────────────────────────────────────────────
+// O estado é um documento único: cada saveState() envia tudo. Duas regras
+// mantêm isso seguro agora que o servidor versiona o documento:
+//
+//  1. Uma gravação por vez. Havia 41 pontos chamando saveState() livremente;
+//     dois POSTs em voo carregariam a mesma versão base e o segundo levaria
+//     409 sem motivo. A fila abaixo serializa e ainda junta as chamadas
+//     pendentes — como o corpo é sempre o retrato completo e atual, basta
+//     gravar uma vez depois da que está em voo.
+//  2. Conflito real (outra aba ou outro usuário gravou) recarrega o estado do
+//     servidor em vez de sobrescrever o trabalho alheio.
+
+let stateVersion = null;   // versão que esta aba leu do servidor
+let salvandoAgora = null;  // POST em voo
+let salvarDeNovo = false;  // houve pedido de save enquanto o POST estava em voo
+
+function montarStatePayload() {
+  return { clientes, gruposClientes, faturas, recargas, parceiros, estacoes, contasReceber, recebiveisManuais, fluxoCaixa, configFin: _getConfigFin(), configuracoesRede };
+}
+
 function saveState() {
   // Usuário somente leitura: nunca envia gravações (o servidor também bloqueia).
   if (isSomenteLeitura()) {
@@ -164,19 +187,73 @@ function saveState() {
     if (typeof toast === 'function') toast('Dados ainda não carregados do servidor. Recarregue a página antes de salvar.', 'error');
     return Promise.resolve();
   }
-  const state = { clientes, gruposClientes, faturas, recargas, parceiros, estacoes, contasReceber, recebiveisManuais, fluxoCaixa, configFin: _getConfigFin(), configuracoesRede };
-  return fetch(STATE_API, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(state)
-  }).then(res => {
-    if (res.status === 401) window.location.href = '/login';
-    if (!res.ok && typeof toast === 'function') toast('Erro ao salvar no servidor.', 'error');
+
+  if (salvandoAgora) {
+    // Já existe um POST em voo: marca que o retrato mudou de novo e espera.
+    salvarDeNovo = true;
+    return salvandoAgora;
+  }
+
+  salvandoAgora = enviarState().finally(() => {
+    salvandoAgora = null;
+    if (salvarDeNovo) {
+      salvarDeNovo = false;
+      saveState();
+    }
+  });
+  return salvandoAgora;
+}
+
+async function enviarState({ forcar = false } = {}) {
+  const payload = { ...montarStatePayload(), __version: stateVersion };
+  if (forcar) payload.__forcar = true;
+
+  try {
+    const res = await fetch(STATE_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (res.status === 401) { window.location.href = '/login'; return res; }
+
+    const dados = await res.json().catch(() => ({}));
+
+    if (res.ok) {
+      stateVersion = dados.version ?? stateVersion;
+      return res;
+    }
+
+    // 409 — outra sessão gravou depois que esta página carregou. Recarregar é
+    // o único caminho seguro: sobrescrever apagaria o trabalho da outra.
+    if (res.status === 409) {
+      console.warn('Conflito de versão ao salvar. Recarregando o estado do servidor.');
+      if (typeof toast === 'function') toast('Outra sessão alterou os dados. Recarregando para não sobrescrever — refaça a última alteração.', 'error');
+      await loadState();
+      return res;
+    }
+
+    // 422 — a gravação apagaria dados existentes. Quase sempre é bug ou tela
+    // aberta há muito tempo, então pede confirmação em vez de gravar calado.
+    if (res.status === 422) {
+      const resumo = (dados.perdas || []).map(p => `${p.colecao}: ${p.antes} → ${p.depois}`).join('\n');
+      const confirmar = window.confirm(
+        'Esta gravação removeria muitos registros de uma vez:\n\n' + resumo +
+        '\n\nIsso costuma indicar erro. Confirme apenas se você realmente fez essas exclusões.\n\nGravar mesmo assim?'
+      );
+      if (!confirmar) {
+        await loadState();
+        return res;
+      }
+      return enviarState({ forcar: true });
+    }
+
+    if (typeof toast === 'function') toast(dados.error || 'Erro ao salvar no servidor.', 'error');
     return res;
-  }).catch(err => {
+  } catch (err) {
     console.error('Erro ao salvar no servidor:', err);
     if (typeof toast === 'function') toast('Erro de conexão ao salvar. Sua alteração pode não ter sido gravada.', 'error');
-  });
+  }
 }
 
 

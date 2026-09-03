@@ -77,9 +77,46 @@ GET  /api/tupi/sessions/:id/user-data  # dados do usuário de uma sessão (consu
 Observação: a API Tupi **não fornece placa** do veículo. A chave para vincular a recarga ao
 cliente/parceiro no faturamento é o `document` (CPF/CNPJ) retornado no user-data.
 
-## Observação importante
+## Estado da aplicação (`app_state`)
 
-Esta versão ainda salva dados principalmente no navegador/localStorage. Para uso multiusuário/produção final, o próximo passo recomendado é migrar dados para banco persistente, como PostgreSQL.
+Os dados de negócio (clientes, faturas, recargas, parceiros, estações, financeiro) ficam
+num único documento JSONB na tabela `app_state`. O módulo [`server/estado.js`](server/estado.js)
+é o **dono exclusivo** dessa tabela — nenhum outro arquivo deve fazer `UPDATE app_state`
+direto; use `salvarEstado()` (gravação vinda do cliente) ou `mutarEstado()` (mutação interna,
+como a baixa de pagamento no webhook).
+
+Três proteções cobrem os riscos de manter tudo num documento só:
+
+**1. Trava otimista por versão.** `GET /api/state` devolve `__version`. O cliente reenvia esse
+número no `POST /api/state`. Se outra aba ou outro usuário gravou nesse intervalo, o servidor
+responde **409** com o estado atual em vez de deixar o último gravador apagar o trabalho do
+primeiro. O painel recarrega e avisa o usuário. No servidor a leitura usa `SELECT ... FOR UPDATE`,
+então gravações simultâneas são serializadas e o conflito é sempre detectado.
+
+**2. Guarda contra apagamento.** Um payload que remove mais de 30% dos itens de qualquer
+coleção protegida — ou que simplesmente omite a coleção — é recusado com **422** e a lista do
+que seria perdido. O painel pede confirmação explícita e só então reenvia com `__forcar`.
+Ajuste o limite com `STATE_SHRINK_MAX` (padrão `0.3`).
+
+**3. Histórico versionado.** Toda gravação arquiva a versão anterior em `app_state_history`,
+mantendo as últimas 200 (`STATE_HISTORY_KEEP`). Dá para auditar e desfazer sem depender do
+backup de 6 horas:
+
+```text
+GET  /api/state/historico           # versões, autor, motivo e totais por coleção
+GET  /api/state/historico/:version  # conteúdo completo de uma versão
+POST /api/state/restaurar/:version  # restaura (também reversível) — admin
+```
+
+No cliente, as 41 chamadas de `saveState()` passam por uma fila: uma gravação por vez, com
+as pendentes agrupadas na próxima — o corpo é sempre o retrato completo, então basta a última.
+
+### Próximo passo
+
+Isso torna o documento único seguro, mas não elimina o custo de enviar o estado inteiro a cada
+edição (o limite do parser JSON é 2 MB). A evolução natural é normalizar as coleções maiores —
+`recargas` e `faturas` primeiro — em tabelas próprias com endpoints por registro, mantendo o
+`app_state` apenas para configuração.
 
 ## Módulo de Contratos e ZapSign
 

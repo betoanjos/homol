@@ -15,6 +15,7 @@ import { initAniversariosDB, processarAniversarios, enviarTesteAniversario, stat
 import { initSegurancaDB, checarBloqueio, registrarFalhaLogin, limparFalhasLogin, twofaAtivo, twofaEmailDestino, criarOtp, validarOtp, emailCodigoHTML, emailAlertaLoginHTML, getClientIp, initDispositivosDB, confiarDispositivo, dispositivoConfiavel, revogarDispositivos, diasLembrarDispositivo } from './seguranca.js';
 import { initContratosDB, criarContratosRouter, receberWebhookZapSign, exportarContratosBackup } from './contratos/index.js';
 import { initEstadoDB, lerEstado, lerEstadoData, salvarEstado, mutarEstado, listarHistorico, lerVersaoHistorico, restaurarVersao, ConflitoDeVersao, EstadoSuspeito } from './estado.js';
+import { enviarBackup, backupRemotoConfigurado, s3Config } from './backupRemoto.js';
 
 const app = express();
 app.use(cors());
@@ -127,12 +128,52 @@ async function criarBackupAutomatico(motivo = 'automatico') {
     }
   }
 
-  ultimoBackup = { ok: true, criadoEm: new Date().toISOString(), motivo, jsonFile, dumpFile, dumpOk, dumpErro };
+  // Envio para fora do container. BACKUP_DIR fica no sistema de arquivos do
+  // container, que o Railway apaga a cada deploy/restart — sem esta etapa o
+  // backup existe apenas até o próximo deploy.
+  const remoto = await enviarBackup([jsonFile, dumpFile]);
+
+  ultimoBackup = { ok: true, criadoEm: new Date().toISOString(), motivo, jsonFile, dumpFile, dumpOk, dumpErro, remoto };
   await limparBackupsAntigos();
+
+  // Um backup que só existe localmente é um backup perdido: avisa alto.
+  if (!remoto.ok) {
+    console.warn('BACKUP SEM CÓPIA REMOTA:', remoto.erro);
+    await alertarFalhaBackup(remoto, { motivo, dumpErro }).catch(err => console.warn('Alerta de backup não enviado:', err.message));
+  }
+
   return ultimoBackup;
 }
 
+// Avisa por e-mail quando o backup não sai do container. Só dispara se
+// BACKUP_ALERTA_EMAIL estiver definido, e no máximo uma vez a cada 12h para
+// não transformar uma configuração ausente em enxurrada de e-mails.
+let ultimoAlertaBackup = 0;
+async function alertarFalhaBackup(remoto, { motivo, dumpErro }) {
+  const destino = process.env.BACKUP_ALERTA_EMAIL;
+  if (!destino) return;
+  const agora = Date.now();
+  if (agora - ultimoAlertaBackup < 12 * 60 * 60 * 1000) return;
+  ultimoAlertaBackup = agora;
+
+  const html = `
+    <p><strong>O backup do EV Core não foi copiado para fora do servidor.</strong></p>
+    <p>Os arquivos foram gravados dentro do container, que é apagado a cada deploy ou reinício.
+       Enquanto isso não for corrigido, não há backup recuperável.</p>
+    <p><strong>Motivo:</strong> ${remoto.erro || 'desconhecido'}</p>
+    ${dumpErro ? `<p><strong>pg_dump:</strong> ${dumpErro}</p>` : ''}
+    <p>Execução: ${motivo} — ${new Date().toISOString()}</p>`;
+
+  await enviarEmailGenerico({ para: destino, assunto: 'ALERTA: backup do EV Core sem cópia remota', html });
+}
+
 function iniciarBackupAutomatico() {
+  if (backupRemotoConfigurado()) {
+    const { endpoint, bucket } = s3Config();
+    console.log(`Backup com cópia remota em ${endpoint}/${bucket}`);
+  } else {
+    console.warn('ATENÇÃO: backup sem armazenamento remoto. Os arquivos ficam no container e são perdidos a cada deploy. Configure BACKUP_S3_ENDPOINT, BACKUP_S3_BUCKET, BACKUP_S3_ACCESS_KEY_ID e BACKUP_S3_SECRET_ACCESS_KEY.');
+  }
   const intervaloMs = Math.max(1, BACKUP_INTERVAL_HOURS) * 60 * 60 * 1000;
   setTimeout(() => criarBackupAutomatico('startup').catch(err => console.error('Erro no backup inicial:', err)), 15000);
   setInterval(() => criarBackupAutomatico('automatico').catch(err => console.error('Erro no backup automático:', err)), intervaloMs);
@@ -883,7 +924,27 @@ app.get('/api/backup/status', async (_, res) => {
   try {
     await ensureBackupDir();
     const files = existsSync(BACKUP_DIR) ? (await fs.readdir(BACKUP_DIR)).filter(f => f.startsWith('evparking-backup-')).sort().reverse().slice(0, 20) : [];
-    res.json({ ok: true, backupDir: BACKUP_DIR, intervalHours: BACKUP_INTERVAL_HOURS, keepLast: BACKUP_KEEP_LAST, ultimoBackup, files });
+    // Os arquivos listados vivem no container e somem no próximo deploy. Só há
+    // backup recuperável de verdade quando o envio remoto está configurado.
+    const cfg = s3Config();
+    const remotoConfigurado = backupRemotoConfigurado(cfg);
+    res.json({
+      ok: true,
+      backupDir: BACKUP_DIR,
+      intervalHours: BACKUP_INTERVAL_HOURS,
+      keepLast: BACKUP_KEEP_LAST,
+      ultimoBackup,
+      files,
+      armazenamentoEfemero: !remotoConfigurado,
+      remoto: {
+        configurado: remotoConfigurado,
+        destino: remotoConfigurado ? `${cfg.endpoint}/${cfg.bucket}` : null,
+        ultimoEnvio: ultimoBackup?.remoto || null
+      },
+      aviso: remotoConfigurado
+        ? null
+        : 'Sem armazenamento remoto: estes arquivos existem apenas dentro do container e serão perdidos no próximo deploy. Configure BACKUP_S3_*.'
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

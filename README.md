@@ -77,6 +77,35 @@ GET  /api/tupi/sessions/:id/user-data  # dados do usuário de uma sessão (consu
 Observação: a API Tupi **não fornece placa** do veículo. A chave para vincular a recarga ao
 cliente/parceiro no faturamento é o `document` (CPF/CNPJ) retornado no user-data.
 
+## Backup
+
+O backup automático roda a cada `BACKUP_INTERVAL_HOURS` (padrão 6) e grava em
+`BACKUP_DIR` um JSON do `app_state` + contratos e, quando o `pg_dump` está disponível, um dump
+completo do banco.
+
+**`BACKUP_DIR` fica dentro do container, e o sistema de arquivos do Railway é efêmero: cada
+deploy ou restart apaga tudo.** Sem armazenamento remoto configurado, o backup existe apenas até
+o próximo deploy — por isso o servidor avisa no boot, o `/api/backup/status` devolve
+`armazenamentoEfemero: true`, e um e-mail de alerta é disparado (no máximo um a cada 12h) se
+`BACKUP_ALERTA_EMAIL` estiver definido.
+
+Para ter backup recuperável de verdade, configure um bucket S3-compatível (AWS S3, Cloudflare R2,
+Backblaze B2, MinIO, Wasabi):
+
+```env
+BACKUP_S3_ENDPOINT=https://<conta>.r2.cloudflarestorage.com
+BACKUP_S3_BUCKET=evcore-backups
+BACKUP_S3_REGION=auto            # us-east-1 na AWS; "auto" no R2
+BACKUP_S3_ACCESS_KEY_ID=...
+BACKUP_S3_SECRET_ACCESS_KEY=...
+BACKUP_S3_PREFIX=evparking/      # opcional
+BACKUP_ALERTA_EMAIL=voce@dominio.com.br
+```
+
+A assinatura AWS SigV4 é implementada em [`server/backupRemoto.js`](server/backupRemoto.js) com
+`crypto`, sem adicionar dependência ao projeto — o SDK da AWS pesa mais que a aplicação inteira.
+Os testes validam a assinatura contra o vetor oficial `get-vanilla` da suíte `aws4_testsuite`.
+
 ## Estado da aplicação (`app_state`)
 
 Os dados de negócio (clientes, faturas, recargas, parceiros, estações, financeiro) ficam

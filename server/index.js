@@ -16,6 +16,7 @@ import { initSegurancaDB, checarBloqueio, registrarFalhaLogin, limparFalhasLogin
 import { initContratosDB, criarContratosRouter, receberWebhookZapSign, exportarContratosBackup } from './contratos/index.js';
 import { initEstadoDB, lerEstado, lerEstadoData, salvarEstado, mutarEstado, listarHistorico, lerVersaoHistorico, restaurarVersao, ConflitoDeVersao, EstadoSuspeito } from './estado.js';
 import { enviarBackup, backupRemotoConfigurado, s3Config } from './backupRemoto.js';
+import { initRecargasDB, listarRecargas, salvarRecargas, excluirRecargas, contarRecargas, migrarRecargasDoEstado } from './recargas.js';
 
 const app = express();
 app.use(cors());
@@ -304,6 +305,11 @@ async function initParceiroArquivosDB() {
 }
 
 await initEstadoDB();
+await initRecargasDB();
+// Move as recargas que ainda estiverem no app_state para a tabela própria.
+// Não bloqueia o boot: se falhar, o app sobe e a migração é tentada de novo
+// no próximo restart (a operação é idempotente).
+await migrarRecargasDoEstado().catch(err => console.error('Migração de recargas falhou (será repetida no próximo boot):', err.message));
 await initAuthDB();
 await initTupiDB();
 await initAniversariosDB();
@@ -470,7 +476,14 @@ app.use('/api/contracts', criarContratosRouter());
 app.get('/api/state', async (req, res) => {
   try {
     const { data, version, updatedAt, updatedBy } = await lerEstado();
-    res.json({ ...data, __version: version, __updatedAt: updatedAt, __updatedBy: updatedBy });
+    // As recargas moram em tabela própria, mas o painel recebe a lista junto
+    // com o estado, como sempre recebeu — nada muda na leitura.
+    // Se a migração ainda não completou, a tabela está vazia e o documento
+    // ainda tem a lista: servimos a do documento para o painel nunca aparecer
+    // sem recargas enquanto os dados existem.
+    const doBanco = await listarRecargas();
+    const recargas = doBanco.length ? doBanco : (Array.isArray(data.recargas) ? data.recargas : []);
+    res.json({ ...data, recargas, __version: version, __updatedAt: updatedAt, __updatedBy: updatedBy });
   } catch (err) {
     console.error('Erro ao carregar estado:', err);
     res.status(500).json({ error: 'Erro ao carregar dados.' });
@@ -482,6 +495,39 @@ app.post('/api/state', async (req, res) => {
     const corpo = req.body || {};
     // Metadados de controle não são persistidos junto com o estado.
     const { __version, __updatedAt, __updatedBy, __forcar, ...estado } = corpo;
+    // Recargas têm tabela e endpoint próprios. Um cliente que ainda as envia
+    // no estado é uma aba aberta desde antes do deploy: descartar em silêncio
+    // faria as edições de recarga dessa aba sumirem sem aviso. Recusamos e
+    // pedimos recarga da página, que é o único caminho que não perde nada.
+    if (Array.isArray(estado.recargas)) {
+      // 426 e não 409: o 409 significa conflito de versão e faria o cliente
+      // antigo exibir "outra sessão alterou os dados", que é enganoso aqui.
+      return res.status(426).json({
+        error: 'Esta página está desatualizada. Recarregue (F5) antes de continuar — suas recargas não foram gravadas.',
+        recarregar: true
+      });
+    }
+
+    // Se a migração não completou, o documento ainda guarda as recargas e este
+    // corpo (cliente novo) não as traz. Gravar assim apagaria a lista do
+    // documento sem que ela existisse na tabela. Tentamos migrar — a operação
+    // é idempotente — e só então seguimos.
+    const antes = await lerEstado();
+    if (Array.isArray(antes.data.recargas) && antes.data.recargas.length) {
+      await migrarRecargasDoEstado();
+      const depois = await lerEstado();
+      if (Array.isArray(depois.data.recargas) && depois.data.recargas.length) {
+        return res.status(503).json({ error: 'Migração de recargas pendente no servidor. Tente salvar novamente em instantes.' });
+      }
+      // A migração alterou o documento, então a versão que este cliente tinha
+      // ficou velha. Devolvemos o estado atual para ele recarregar e repetir.
+      return res.status(409).json({
+        error: 'Os dados foram reorganizados no servidor. Recarregando para continuar.',
+        conflito: true,
+        versaoAtual: depois.version,
+        estadoAtual: { ...depois.data, recargas: await listarRecargas(), __version: depois.version }
+      });
+    }
     const resultado = await salvarEstado(estado, {
       baseVersion: __version == null ? null : Number(__version),
       usuario: req.user?.username || null,
@@ -503,6 +549,32 @@ app.post('/api/state', async (req, res) => {
     }
     console.error('Erro ao salvar estado:', err);
     res.status(err.status || 500).json({ error: err.status ? err.message : 'Erro ao salvar dados.' });
+  }
+});
+
+// Grava um lote de recargas (as que mudaram no painel) e remove as excluídas.
+// O painel manda só o diff, então o corpo é proporcional ao que foi alterado
+// e não ao tamanho do histórico.
+app.post('/api/recargas/lote', async (req, res) => {
+  try {
+    const { alteradas = [], removidas = [] } = req.body || {};
+    if (!Array.isArray(alteradas) || !Array.isArray(removidas)) {
+      return res.status(400).json({ error: 'Formato inválido: alteradas e removidas devem ser listas.' });
+    }
+    const gravadas = await salvarRecargas(alteradas, { usuario: req.user?.username || null });
+    const excluidas = await excluirRecargas(removidas);
+    res.json({ ok: true, gravadas, excluidas, total: await contarRecargas() });
+  } catch (err) {
+    console.error('Erro ao gravar recargas:', err);
+    res.status(500).json({ error: 'Erro ao gravar recargas.' });
+  }
+});
+
+app.get('/api/recargas/contagem', async (_req, res) => {
+  try {
+    res.json({ total: await contarRecargas() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -140,12 +140,36 @@ POST /api/state/restaurar/:version  # restaura (também reversível) — admin
 No cliente, as 41 chamadas de `saveState()` passam por uma fila: uma gravação por vez, com
 as pendentes agrupadas na próxima — o corpo é sempre o retrato completo, então basta a última.
 
+### Recargas em tabela própria
+
+`recargas` era a maior coleção do documento e a única que só cresce. Como o painel reenviava o
+estado inteiro a cada edição, o corpo do `POST /api/state` caminhava para o teto de 2 MB do
+parser — e ao bater nesse limite **toda** gravação passaria a falhar de uma vez.
+
+Agora as recargas vivem na tabela `recargas` (chave `uid`, registro em JSONB), gravadas por
+[`server/recargas.js`](server/recargas.js):
+
+- **Leitura inalterada.** O `GET /api/state` devolve a lista completa junto com o estado, como
+  sempre devolveu — nada mudou nas telas.
+- **Escrita por diferença.** O painel compara as recargas em memória com o retrato recebido do
+  servidor e envia ao `POST /api/recargas/lote` apenas as que mudaram, em lotes de 300. O corpo
+  passa a ser proporcional ao que foi alterado, não ao tamanho do histórico.
+
+O diff existe porque as recargas são alteradas *in-place* em dezenas de pontos da lógica de
+faturamento (classificação por cliente, carimbo de `faturaId`, correção manual, exclusão, cálculo
+de tarifa). Persistir registro a registro exigiria mapear cada um desses pontos, e esquecer um
+faria uma alteração sumir sem aviso. A comparação em [`public/recargas-diff.js`](public/recargas-diff.js)
+descobre sozinha o que mudou, sem que nenhum ponto de mutação precise saber que existe persistência.
+
+A migração roda no boot, é idempotente e move o que ainda estiver no `app_state`. Enquanto ela não
+completa, o `GET` serve a lista do documento e o `POST` se recusa a gravar um estado sem recargas
+— nunca há uma janela em que a lista possa ser apagada do documento sem existir na tabela.
+
 ### Próximo passo
 
-Isso torna o documento único seguro, mas não elimina o custo de enviar o estado inteiro a cada
-edição (o limite do parser JSON é 2 MB). A evolução natural é normalizar as coleções maiores —
-`recargas` e `faturas` primeiro — em tabelas próprias com endpoints por registro, mantendo o
-`app_state` apenas para configuração.
+Falta `faturas`, que cresce junto com o faturamento pelo mesmo motivo. E, quando o formato do
+registro estabilizar, vale trocar o JSONB por colunas reais em `recargas`, com paginação no
+painel — hoje a lista inteira ainda é carregada de uma vez na leitura.
 
 ## Módulo de Contratos e ZapSign
 

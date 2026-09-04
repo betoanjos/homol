@@ -4325,7 +4325,7 @@ function gerarPDFParceiro(id) {
   // Taxa Tupi NÃO aparece aqui — é custo nosso, não do parceiro
   const rowsEsq = [
     ['Faturamento bruto',                                   moneyBR(calc.bruto)],
-    ...(calc.descontosPosPago > 0 ? [['(-) Desconto Motoristas APP', moneyBR(calc.descontosPosPago)], ['Receita líquida', moneyBR(calc.receitaLiquida)]] : []),
+    ...(calc.descontosPosPago > 0 ? [['(-) Desconto Motoristas APP', moneyBR(calc.descontosPosPago)], ['Total recebido', moneyBR(calc.receitaLiquida)]] : []),
     ['Energia consumida',                                   formatKwh(calc.kwh)],
     ['(-) Custo energia',                                   moneyBR(calc.custoEnergia)],
     [`(-) Taxas operacionais (${calc.taxaOperacionalPct}%)`,moneyBR(calc.taxaOperacional)],

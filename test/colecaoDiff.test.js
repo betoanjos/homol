@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 global.window = {};
-await import('../public/recargas-diff.js');
-const { criarRetrato, calcularDiff, emLotes, confirmarNoRetrato } = window.EVRecargasDiff;
+await import('../public/colecao-diff.js');
+const { criarRetrato, calcularDiff, emLotes, confirmarNoRetrato } = window.EVColecaoDiff;
 
 const rec = (uid, extra = {}) => ({ uid, data: '2026-08-01 10:00', kwh: 10, ...extra });
 
@@ -52,7 +52,7 @@ test('recarga sumida da lista vira remoção', () => {
 test('registros sem uid são separados, nunca silenciosamente perdidos', () => {
   const d = calcularDiff(criarRetrato([]), [rec('A'), { data: 'x' }, { uid: '', data: 'y' }]);
   assert.deepEqual(d.alteradas.map(r => r.uid), ['A']);
-  assert.equal(d.semUid.length, 2);
+  assert.equal(d.semChave.length, 2);
 });
 
 test('uid numérico e uid string são o mesmo registro', () => {
@@ -107,4 +107,49 @@ test('lotes respeitam o tamanho e cobrem todos os itens', () => {
 test('retrato ignora registros sem uid em vez de quebrar', () => {
   const retrato = criarRetrato([rec('A'), null, { data: 'sem uid' }]);
   assert.equal(retrato.size, 1);
+});
+
+// ─── Chave configurável: faturas usam `id`, recargas usam `uid` ─────────────
+
+const fat = (id, extra = {}) => ({ id, numero: 'EVP' + id, totalPagar: 100, ...extra });
+
+test('faturas são chaveadas por id, não por uid', () => {
+  const lista = [fat('fat_1'), fat('fat_2')];
+  const retrato = criarRetrato(lista, 'id');
+  assert.equal(retrato.size, 2);
+  assert.deepEqual(calcularDiff(retrato, lista, 'id').alteradas, []);
+});
+
+test('baixa de pagamento numa fatura é detectada', () => {
+  // Reproduz o que o webhook do Mercado Pago faz: marca como paga.
+  const lista = [fat('fat_1'), fat('fat_2')];
+  const retrato = criarRetrato(lista, 'id');
+  lista[0].status = 'pago';
+  lista[0].pago = true;
+
+  const d = calcularDiff(retrato, lista, 'id');
+  assert.deepEqual(d.alteradas.map(f => f.id), ['fat_1']);
+  confirmarNoRetrato(retrato, d.alteradas, d.removidas, 'id');
+  assert.deepEqual(calcularDiff(retrato, lista, 'id').alteradas, []);
+});
+
+test('sem chave informada, o padrão continua sendo uid', () => {
+  // Garante que a generalização não mudou o comportamento das recargas.
+  const lista = [rec('A')];
+  assert.equal(criarRetrato(lista).size, 1);
+  assert.deepEqual(calcularDiff(criarRetrato(lista), lista).alteradas, []);
+});
+
+test('fatura sem id vai para semChave em vez de ser perdida', () => {
+  const d = calcularDiff(criarRetrato([], 'id'), [fat('fat_1'), { numero: 'sem id' }], 'id');
+  assert.deepEqual(d.alteradas.map(f => f.id), ['fat_1']);
+  assert.equal(d.semChave.length, 1);
+});
+
+test('a chave errada não confunde coleções', () => {
+  // Uma fatura comparada com chave 'uid' não tem chave nenhuma — precisa cair
+  // em semChave, nunca ser tratada como registro novo sem identidade.
+  const d = calcularDiff(criarRetrato([], 'uid'), [fat('fat_1')], 'uid');
+  assert.deepEqual(d.alteradas, []);
+  assert.equal(d.semChave.length, 1);
 });

@@ -64,9 +64,10 @@ async function loadState() {
     faturas = data.faturas || faturas || [];
     recargas = data.recargas || recargas || [];
     // Retrato do que está gravado no servidor. A partir daqui, cada save envia
-    // apenas as recargas que diferirem deste retrato — o histórico inteiro não
+    // apenas os registros que diferirem deste retrato — o histórico inteiro não
     // volta a trafegar a cada edição.
-    retratoRecargas = EVRecargasDiff.criarRetrato(recargas);
+    retratoRecargas = EVColecaoDiff.criarRetrato(recargas, 'uid');
+    retratoFaturas = EVColecaoDiff.criarRetrato(faturas, 'id');
     parceiros = data.parceiros || parceiros || [];
     estacoes = data.estacoes || estacoes || [];
     // Reidratar os mapas de ID/alias com as estações cadastradas (o mapa fixo
@@ -174,28 +175,29 @@ let stateVersion = null;      // versão que esta aba leu do servidor
 let salvandoAgora = null;     // POST em voo
 let salvarDeNovo = false;     // houve pedido de save enquanto o POST estava em voo
 let retratoRecargas = new Map(); // recargas como estão gravadas no servidor
+let retratoFaturas = new Map();  // faturas como estão gravadas no servidor
 
-// As recargas saíram do documento de estado: vão por endpoint próprio, só as
-// que mudaram. Por isso não entram mais neste payload.
+// Recargas e faturas saíram do documento de estado: vão por endpoint próprio,
+// só as que mudaram. Por isso não entram mais neste payload.
 function montarStatePayload() {
-  return { clientes, gruposClientes, faturas, parceiros, estacoes, contasReceber, recebiveisManuais, fluxoCaixa, configFin: _getConfigFin(), configuracoesRede };
+  return { clientes, gruposClientes, parceiros, estacoes, contasReceber, recebiveisManuais, fluxoCaixa, configFin: _getConfigFin(), configuracoesRede };
 }
 
-// Envia as recargas alteradas/removidas em lotes. Devolve true se tudo foi
-// gravado; em caso de falha o retrato não é atualizado, então o que ficou
-// pendente entra no próximo save em vez de se perder.
-async function enviarRecargasAlteradas() {
-  const { alteradas, removidas, semUid } = EVRecargasDiff.calcularDiff(retratoRecargas, recargas);
-  if (semUid.length) console.warn(`${semUid.length} recarga(s) sem uid não foram gravadas.`, semUid);
+// Envia os registros alterados/removidos de uma coleção, em lotes. Devolve
+// true se tudo foi gravado; em caso de falha o retrato não é atualizado, então
+// o que ficou pendente entra no próximo save em vez de se perder.
+async function enviarColecaoAlterada({ nome, rota, lista, retrato, chave }) {
+  const { alteradas, removidas, semChave } = EVColecaoDiff.calcularDiff(retrato, lista, chave);
+  if (semChave.length) console.warn(`${semChave.length} ${nome} sem ${chave} não foram gravadas.`, semChave);
   if (!alteradas.length && !removidas.length) return true;
 
-  const lotes = EVRecargasDiff.emLotes(alteradas, 300);
+  const lotes = EVColecaoDiff.emLotes(alteradas, 300);
   // As remoções vão junto do primeiro lote (ou sozinhas, se só houver remoção).
   if (!lotes.length) lotes.push([]);
 
   for (let i = 0; i < lotes.length; i++) {
     const corpo = { alteradas: lotes[i], removidas: i === 0 ? removidas : [] };
-    const res = await fetch('/api/recargas/lote', {
+    const res = await fetch(rota, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(corpo)
@@ -203,13 +205,21 @@ async function enviarRecargasAlteradas() {
     if (res.status === 401) { window.location.href = '/login'; return false; }
     if (!res.ok) {
       const erro = await res.json().catch(() => ({}));
-      console.error('Falha ao gravar recargas:', erro);
-      if (typeof toast === 'function') toast(erro.error || 'Erro ao gravar recargas.', 'error');
+      console.error(`Falha ao gravar ${nome}:`, erro);
+      if (typeof toast === 'function') toast(erro.error || `Erro ao gravar ${nome}.`, 'error');
       return false;
     }
-    EVRecargasDiff.confirmarNoRetrato(retratoRecargas, corpo.alteradas, corpo.removidas);
+    EVColecaoDiff.confirmarNoRetrato(retrato, corpo.alteradas, corpo.removidas, chave);
   }
   return true;
+}
+
+function enviarRecargasAlteradas() {
+  return enviarColecaoAlterada({ nome: 'recargas', rota: '/api/recargas/lote', lista: recargas, retrato: retratoRecargas, chave: 'uid' });
+}
+
+function enviarFaturasAlteradas() {
+  return enviarColecaoAlterada({ nome: 'faturas', rota: '/api/faturas/lote', lista: faturas, retrato: retratoFaturas, chave: 'id' });
 }
 
 function saveState() {
@@ -247,10 +257,11 @@ async function enviarState({ forcar = false } = {}) {
   if (forcar) payload.__forcar = true;
 
   try {
-    // Recargas primeiro: são independentes do documento de estado (chaveadas
-    // por uid, sem versão), então gravá-las antes evita que um conflito de
-    // versão no estado descarte também o que mudou nas recargas.
+    // Recargas e faturas primeiro: são independentes do documento de estado
+    // (chaveadas por uid/id, sem versão), então gravá-las antes evita que um
+    // conflito de versão no estado descarte também o que mudou nelas.
     await enviarRecargasAlteradas();
+    await enviarFaturasAlteradas();
 
     const res = await fetch(STATE_API, {
       method: 'POST',

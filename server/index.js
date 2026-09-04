@@ -14,9 +14,10 @@ import { fetchSessionUserData, tupiConfig } from './tupi.js';
 import { initAniversariosDB, processarAniversarios, enviarTesteAniversario, statusAniversarios, iniciarAgendadorAniversarios, enviarEmailGenerico, aniversariosConfigurado } from './aniversarios.js';
 import { initSegurancaDB, checarBloqueio, registrarFalhaLogin, limparFalhasLogin, twofaAtivo, twofaEmailDestino, criarOtp, validarOtp, emailCodigoHTML, emailAlertaLoginHTML, getClientIp, initDispositivosDB, confiarDispositivo, dispositivoConfiavel, revogarDispositivos, diasLembrarDispositivo } from './seguranca.js';
 import { initContratosDB, criarContratosRouter, receberWebhookZapSign, exportarContratosBackup } from './contratos/index.js';
-import { initEstadoDB, lerEstado, lerEstadoData, salvarEstado, mutarEstado, listarHistorico, lerVersaoHistorico, restaurarVersao, ConflitoDeVersao, EstadoSuspeito } from './estado.js';
+import { initEstadoDB, lerEstado, lerEstadoData, salvarEstado, listarHistorico, lerVersaoHistorico, restaurarVersao, ConflitoDeVersao, EstadoSuspeito } from './estado.js';
 import { enviarBackup, backupRemotoConfigurado, s3Config } from './backupRemoto.js';
 import { initRecargasDB, listarRecargas, salvarRecargas, excluirRecargas, contarRecargas, migrarRecargasDoEstado } from './recargas.js';
+import { initFaturasDB, listarFaturas, salvarFaturas, excluirFaturas, contarFaturas, migrarFaturasDoEstado, marcarFaturaPaga } from './faturas.js';
 
 const app = express();
 app.use(cors());
@@ -306,10 +307,12 @@ async function initParceiroArquivosDB() {
 
 await initEstadoDB();
 await initRecargasDB();
-// Move as recargas que ainda estiverem no app_state para a tabela própria.
-// Não bloqueia o boot: se falhar, o app sobe e a migração é tentada de novo
-// no próximo restart (a operação é idempotente).
+await initFaturasDB();
+// Move recargas e faturas que ainda estiverem no app_state para as tabelas
+// próprias. Não bloqueia o boot: se falhar, o app sobe e a migração é tentada
+// de novo no próximo restart (as operações são idempotentes).
 await migrarRecargasDoEstado().catch(err => console.error('Migração de recargas falhou (será repetida no próximo boot):', err.message));
+await migrarFaturasDoEstado().catch(err => console.error('Migração de faturas falhou (será repetida no próximo boot):', err.message));
 await initAuthDB();
 await initTupiDB();
 await initAniversariosDB();
@@ -480,10 +483,11 @@ app.get('/api/state', async (req, res) => {
     // com o estado, como sempre recebeu — nada muda na leitura.
     // Se a migração ainda não completou, a tabela está vazia e o documento
     // ainda tem a lista: servimos a do documento para o painel nunca aparecer
-    // sem recargas enquanto os dados existem.
-    const doBanco = await listarRecargas();
-    const recargas = doBanco.length ? doBanco : (Array.isArray(data.recargas) ? data.recargas : []);
-    res.json({ ...data, recargas, __version: version, __updatedAt: updatedAt, __updatedBy: updatedBy });
+    // sem dados enquanto eles existem.
+    const [recargasBanco, faturasBanco] = await Promise.all([listarRecargas(), listarFaturas()]);
+    const recargas = recargasBanco.length ? recargasBanco : (Array.isArray(data.recargas) ? data.recargas : []);
+    const faturas = faturasBanco.length ? faturasBanco : (Array.isArray(data.faturas) ? data.faturas : []);
+    res.json({ ...data, recargas, faturas, __version: version, __updatedAt: updatedAt, __updatedBy: updatedBy });
   } catch (err) {
     console.error('Erro ao carregar estado:', err);
     res.status(500).json({ error: 'Erro ao carregar dados.' });
@@ -499,33 +503,38 @@ app.post('/api/state', async (req, res) => {
     // no estado é uma aba aberta desde antes do deploy: descartar em silêncio
     // faria as edições de recarga dessa aba sumirem sem aviso. Recusamos e
     // pedimos recarga da página, que é o único caminho que não perde nada.
-    if (Array.isArray(estado.recargas)) {
+    if (Array.isArray(estado.recargas) || Array.isArray(estado.faturas)) {
       // 426 e não 409: o 409 significa conflito de versão e faria o cliente
       // antigo exibir "outra sessão alterou os dados", que é enganoso aqui.
       return res.status(426).json({
-        error: 'Esta página está desatualizada. Recarregue (F5) antes de continuar — suas recargas não foram gravadas.',
+        error: 'Esta página está desatualizada. Recarregue (F5) antes de continuar — suas alterações não foram gravadas.',
         recarregar: true
       });
     }
 
-    // Se a migração não completou, o documento ainda guarda as recargas e este
-    // corpo (cliente novo) não as traz. Gravar assim apagaria a lista do
-    // documento sem que ela existisse na tabela. Tentamos migrar — a operação
-    // é idempotente — e só então seguimos.
+    // Se a migração não completou, o documento ainda guarda recargas/faturas e
+    // este corpo (cliente novo) não as traz. Gravar assim apagaria as listas do
+    // documento sem que existissem nas tabelas. Tentamos migrar — as operações
+    // são idempotentes — e só então seguimos.
     const antes = await lerEstado();
-    if (Array.isArray(antes.data.recargas) && antes.data.recargas.length) {
-      await migrarRecargasDoEstado();
+    const pendente = ['recargas', 'faturas'].filter(k => Array.isArray(antes.data[k]) && antes.data[k].length);
+    if (pendente.length) {
+      if (pendente.includes('recargas')) await migrarRecargasDoEstado();
+      if (pendente.includes('faturas')) await migrarFaturasDoEstado();
+
       const depois = await lerEstado();
-      if (Array.isArray(depois.data.recargas) && depois.data.recargas.length) {
-        return res.status(503).json({ error: 'Migração de recargas pendente no servidor. Tente salvar novamente em instantes.' });
+      const aindaPendente = ['recargas', 'faturas'].filter(k => Array.isArray(depois.data[k]) && depois.data[k].length);
+      if (aindaPendente.length) {
+        return res.status(503).json({ error: `Migração pendente no servidor (${aindaPendente.join(', ')}). Tente salvar novamente em instantes.` });
       }
       // A migração alterou o documento, então a versão que este cliente tinha
       // ficou velha. Devolvemos o estado atual para ele recarregar e repetir.
+      const [recargasAtuais, faturasAtuais] = await Promise.all([listarRecargas(), listarFaturas()]);
       return res.status(409).json({
         error: 'Os dados foram reorganizados no servidor. Recarregando para continuar.',
         conflito: true,
         versaoAtual: depois.version,
-        estadoAtual: { ...depois.data, recargas: await listarRecargas(), __version: depois.version }
+        estadoAtual: { ...depois.data, recargas: recargasAtuais, faturas: faturasAtuais, __version: depois.version }
       });
     }
     const resultado = await salvarEstado(estado, {
@@ -573,6 +582,30 @@ app.post('/api/recargas/lote', async (req, res) => {
 app.get('/api/recargas/contagem', async (_req, res) => {
   try {
     res.json({ total: await contarRecargas() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mesmo desenho das recargas: o painel manda só as faturas que mudaram.
+app.post('/api/faturas/lote', async (req, res) => {
+  try {
+    const { alteradas = [], removidas = [] } = req.body || {};
+    if (!Array.isArray(alteradas) || !Array.isArray(removidas)) {
+      return res.status(400).json({ error: 'Formato inválido: alteradas e removidas devem ser listas.' });
+    }
+    const gravadas = await salvarFaturas(alteradas, { usuario: req.user?.username || null });
+    const excluidas = await excluirFaturas(removidas);
+    res.json({ ok: true, gravadas, excluidas, total: await contarFaturas() });
+  } catch (err) {
+    console.error('Erro ao gravar faturas:', err);
+    res.status(500).json({ error: 'Erro ao gravar faturas.' });
+  }
+});
+
+app.get('/api/faturas/contagem', async (_req, res) => {
+  try {
+    res.json({ total: await contarFaturas() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1220,38 +1253,12 @@ app.post('/api/webhooks/mercadopago', async (req, res) => {
     memoria.set(String(paymentId), { ...atual, ...status });
 
     if (status.paid) {
-      // Read-modify-write sob lock: sem isso, um save do painel entre a
-      // leitura e a gravação apagava a baixa do pagamento (ou vice-versa).
-      const { alterado } = await mutarEstado(data => {
-        let atualizou = false;
-
-        data.faturas = (data.faturas || []).map(f => {
-          if (
-            String(f.pixPaymentId || '') === String(paymentId) ||
-            String(f.paymentId || '') === String(paymentId) ||
-            String(f.pixTxid || '') === String(paymentId) ||
-            String(f.id || '') === String(status.externalReference || '') ||
-            String(f.numero || '') === String(status.externalReference || '')
-          ) {
-            atualizou = true;
-            return {
-              ...f,
-              status: 'pago',
-              pago: true,
-              paid: true,
-              pixStatus: 'APPROVED',
-              dataPagamento: status.dateApproved || new Date().toISOString()
-            };
-          }
-          return f;
-        });
-
-        // Devolver null aborta a transação sem gravar nem versionar.
-        return atualizou ? data : null;
-      }, { usuario: 'webhook-mercadopago', motivo: `pagamento-${paymentId}` });
+      // A fatura vive em tabela própria: a baixa altera só a linha dela, sem
+      // read-modify-write no documento de estado inteiro.
+      const { alterado, faturas: baixadas } = await marcarFaturaPaga(paymentId, status);
 
       if (alterado) {
-        console.log('Fatura atualizada no banco via webhook:', { paymentId, externalReference: status.externalReference });
+        console.log('Fatura atualizada no banco via webhook:', { paymentId, externalReference: status.externalReference, faturas: baixadas });
       } else {
         console.log('Webhook recebido, mas nenhuma fatura foi encontrada para atualizar:', { paymentId, externalReference: status.externalReference });
       }

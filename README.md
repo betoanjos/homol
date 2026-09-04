@@ -140,7 +140,7 @@ POST /api/state/restaurar/:version  # restaura (também reversível) — admin
 No cliente, as 41 chamadas de `saveState()` passam por uma fila: uma gravação por vez, com
 as pendentes agrupadas na próxima — o corpo é sempre o retrato completo, então basta a última.
 
-### Recargas em tabela própria
+### Recargas e faturas em tabelas próprias
 
 `recargas` era a maior coleção do documento e a única que só cresce. Como o painel reenviava o
 estado inteiro a cada edição, o corpo do `POST /api/state` caminhava para o teto de 2 MB do
@@ -162,14 +162,25 @@ faria uma alteração sumir sem aviso. A comparação em [`public/recargas-diff.
 descobre sozinha o que mudou, sem que nenhum ponto de mutação precise saber que existe persistência.
 
 A migração roda no boot, é idempotente e move o que ainda estiver no `app_state`. Enquanto ela não
-completa, o `GET` serve a lista do documento e o `POST` se recusa a gravar um estado sem recargas
-— nunca há uma janela em que a lista possa ser apagada do documento sem existir na tabela.
+completa, o `GET` serve a lista do documento e o `POST` se recusa a gravar um estado sem elas —
+nunca há uma janela em que a lista possa ser apagada do documento sem existir na tabela.
+
+**Faturas** ([`server/faturas.js`](server/faturas.js)) seguem exatamente o mesmo desenho, com a
+chave `id` em vez de `uid` e o endpoint `POST /api/faturas/lote`. Pesam ainda mais por registro,
+porque cada fatura embute as recargas que a compõem e o QR Code Pix em base64. O webhook do
+Mercado Pago passou a dar baixa direto na linha da fatura, em vez de fazer read-modify-write no
+documento inteiro — a regra que decide qual cobrança é baixada está isolada em
+[`server/faturasPagamento.js`](server/faturasPagamento.js) e é coberta por testes.
+
+O diff é o mesmo módulo para as duas coleções ([`public/colecao-diff.js`](public/colecao-diff.js)),
+parametrizado pela chave.
 
 ### Próximo passo
 
-Falta `faturas`, que cresce junto com o faturamento pelo mesmo motivo. E, quando o formato do
-registro estabilizar, vale trocar o JSONB por colunas reais em `recargas`, com paginação no
-painel — hoje a lista inteira ainda é carregada de uma vez na leitura.
+Quando o formato do registro estabilizar, vale trocar o JSONB por colunas reais, com paginação no
+painel — hoje as listas inteiras ainda são carregadas de uma vez na leitura. As faturas também
+guardam as recargas duplicadas dentro de si (`recargas` além de `recargaUIDs`), redundância que
+pode sair agora que as recargas têm tabela própria.
 
 ## Módulo de Contratos e ZapSign
 

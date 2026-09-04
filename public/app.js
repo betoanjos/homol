@@ -3056,13 +3056,33 @@ function getEquipamentosDisponiveis() {
 function getRecargasParceiro(parceiro, mesKey) {
   const equipamentos = Array.isArray(parceiro.equipamentos) ? parceiro.equipamentos : [];
   return recargas
+    // Recargas excluídas no painel e sessões canceladas não existem para
+    // efeito de repasse: sem este filtro, uma recarga anulada continuava
+    // somando kWh e fazendo a rede pagar energia dela. Mesmo critério que o
+    // Dashboard, os Relatórios e o Payback já aplicavam.
+    .filter(r => !recargaOculta(r) && r.tipoOperacao !== 'sessao_cancelada')
     .filter(r => recargaNoMes(r, mesKey))
     .filter(r => equipamentos.includes(getEquipamentoRecarga(r)))
     .sort((a,b) => (dataParaDate(a)?.getTime() || 0) - (dataParaDate(b)?.getTime() || 0));
 }
 
+// Recargas sem valor cobrado não entram em cálculo nenhum do relatório do
+// parceiro: nem receita, nem kWh, nem custo de energia, nem base de comissão.
+// São cortesia do próprio parceiro, que mantém um cadastro com tarifa zerada e
+// recarrega de graça — a rede não deve pagar o kWh de algo que ele ofereceu por
+// conta própria. Elas continuam lançadas no painel (telas de recargas e
+// relatórios) para edição futura; no instante em que uma delas receber valor,
+// entra normalmente neste cálculo e no PDF.
+//
+// Exceção: parceiros com energia paga pela rede (energiaPelaRede). Ali a rede
+// paga a concessionária direto e as recargas zeradas são da nossa própria
+// equipe, então o kWh continua entrando no custo — apenas não é cobrado de
+// ninguém nem gera comissão, o que já acontece por não haver receita.
 function calcularRelatorioParceiro(parceiro, mesKey) {
-  const lista = getRecargasParceiro(parceiro, mesKey);
+  const todas = getRecargasParceiro(parceiro, mesKey);
+  const energiaPelaRede = !!parceiro.energiaPelaRede;
+  const { base: lista, exibicao: listaExibicao, semCobranca } = EVParceiroRegras.baseDoRelatorio(todas, { energiaPelaRede });
+
   const bruto = lista.reduce((s,r) => s + Number(r.cobranca ?? r.total ?? 0), 0);
   const descontosPosPago = lista.reduce((s,r) => s + descontoPosPagoDaRecarga(r), 0);
   const receitaLiquida = Math.max(0, bruto - descontosPosPago);
@@ -3075,7 +3095,6 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
   // lucro), mas NÃO é somado no repasse ao parceiro.
   const custoEnergiaUnit = Number(parceiro.custoEnergia || 0);
   const custoEnergia = kwh * custoEnergiaUnit;
-  const energiaPelaRede = !!parceiro.energiaPelaRede;
   const custoEnergiaRepasse = energiaPelaRede ? 0 : custoEnergia;
 
   // Mensalidade integrador (receita nossa)
@@ -3110,12 +3129,12 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
   const lucroEVParking = receitaLiquida - taxaTupi - custoEnergia - mensalidade - comissaoParceiro;
 
   return {
-    lista, bruto, descontosPosPago, receitaLiquida, kwh,
+    lista, listaExibicao, bruto, descontosPosPago, receitaLiquida, kwh,
     taxaTupi, taxaTupiPct,
     taxaOperacional, taxaOperacionalPct,
     custoEnergiaUnit, custoEnergia, custoEnergiaRepasse, energiaPelaRede, mensalidade, lucroLiquido,
     comissaoParceiroBruta, comissaoParceiro, compromisoMinimo,
-    totalRepasseParceiro, lucroEVParking
+    totalRepasseParceiro, lucroEVParking, semCobranca
   };
 }
 
@@ -4047,6 +4066,11 @@ function renderParceiros() {
     // Linha de detalhes: qtd recargas | descontos | custo energia | comissão parceiro | taxa Tupi
     const detalhe = [
       `${calc.lista.length} recarga(s)`,
+      // Cortesias ficam fora do cálculo e do PDF; mostradas aqui para não
+      // sumirem do radar — é por elas que se decide editar/cobrar depois.
+      calc.semCobranca.quantidade > 0
+        ? `${calc.semCobranca.quantidade} sem cobrança (${formatKwh(calc.semCobranca.kwh)}) fora do relatório`
+        : null,
       calc.descontosPosPago > 0 ? `Descontos pós-pagos: ${moneyBR(calc.descontosPosPago)}` : null,
       `Energia: ${moneyBR(calc.custoEnergia)} (${moneyBR(calc.custoEnergiaUnit)}/kWh)`,
       calc.compromisoMinimo > 0
@@ -4240,9 +4264,12 @@ function gerarPDFParceiro(id) {
   if (!parceiro) return;
   const mesKey = getMesFechamentoParceiro();
   const calc = calcularRelatorioParceiro(parceiro, mesKey);
-  if (!calc.lista.length) {
-    toast('Não há recargas para este parceiro no mês selecionado.', 'error');
+  if (!calc.listaExibicao.length) {
+    toast('Não há recargas cobradas para este parceiro no mês selecionado.', 'error');
     return;
+  }
+  if (calc.semCobranca.quantidade) {
+    console.info(`PDF ${parceiro.nome}: ${calc.semCobranca.quantidade} recarga(s) sem cobrança (${calc.semCobranca.kwh.toFixed(2)} kWh) fora da listagem.`);
   }
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
@@ -4298,7 +4325,7 @@ function gerarPDFParceiro(id) {
   // Taxa Tupi NÃO aparece aqui — é custo nosso, não do parceiro
   const rowsEsq = [
     ['Faturamento bruto',                                   moneyBR(calc.bruto)],
-    ...(calc.descontosPosPago > 0 ? [['(-) Descontos pós-pagos', moneyBR(calc.descontosPosPago)], ['Receita líquida', moneyBR(calc.receitaLiquida)]] : []),
+    ...(calc.descontosPosPago > 0 ? [['(-) Desconto Motoristas APP', moneyBR(calc.descontosPosPago)], ['Receita líquida', moneyBR(calc.receitaLiquida)]] : []),
     ['Energia consumida',                                   formatKwh(calc.kwh)],
     ['(-) Custo energia',                                   moneyBR(calc.custoEnergia)],
     [`(-) Taxas operacionais (${calc.taxaOperacionalPct}%)`,moneyBR(calc.taxaOperacional)],
@@ -4352,10 +4379,11 @@ function gerarPDFParceiro(id) {
     y += 24;
   };
   drawHeader();
-  // No PDF do parceiro, ocultar por completo recargas sem valor cobrado.
-  // Isso não altera os dados do sistema nem as telas internas.
-  const listaPdfParceiro = (calc.lista || []).filter(r => Number(r.cobranca ?? r.total ?? 0) > 0);
-  listaPdfParceiro.forEach(r => {
+  // A listagem detalhada mostra apenas o que foi cobrado. Para os parceiros
+  // comuns isso é a mesma base dos totais acima; nos de energia paga pela rede
+  // o kWh dos atendimentos gratuitos entra no custo, mas as linhas não são
+  // detalhadas aqui porque nada foi cobrado do parceiro por elas.
+  (calc.listaExibicao || []).forEach(r => {
     checkPage(28);
     if (y < 70) drawHeader();
     doc.setTextColor(...dark); doc.setFontSize(9); doc.setFont(undefined, 'normal');
@@ -5616,16 +5644,24 @@ function renderPayback() {
   function dadosMesEstacao(estacao) {
     if (_cacheDadosMes.has(estacao.id)) return _cacheDadosMes.get(estacao.id);
     const idEst = String(estacao.idTupi || '').replace(/\D/g, '');
+    const parceiro = estacao.parceiroId ? parceiros.find(p => p.id === estacao.parceiroId) : null;
+    const custoEnUnit = parceiro ? Number(parceiro.custoEnergia || 0) : 0;
+    // Mesma exceção do relatório do parceiro: quando a energia é paga pela
+    // rede, as recargas gratuitas são da nossa equipe e o kWh foi pago de
+    // fato, então precisa entrar no custo — senão o payback da estação
+    // aparece melhor do que é.
+    const energiaPelaRede = !!(parceiro && parceiro.energiaPelaRede);
     const recsEstacao = recargas.filter(r => {
       const valor = Number(r.cobranca ?? r.total ?? r.custo ?? 0);
-      if (!(valor > 0) || recargaOculta(r)) return false;
+      if (!(valor > 0) && !energiaPelaRede) return false;
+      // Precisa ser explícito: com energiaPelaRede as zeradas passam a entrar,
+      // e uma sessão cancelada não pode virar energia consumida.
+      if (recargaOculta(r) || r.tipoOperacao === 'sessao_cancelada') return false;
       const idRec = String(r.idEstacao || '').replace(/\D/g, '');
       if (idEst && idRec) return idRec === idEst;               // 1º: ID com ID
       return normalizarEstacao(r) === estacao.nome;             // 2º: nome canônico
     });
     const porMes = {};
-    const parceiro = estacao.parceiroId ? parceiros.find(p => p.id === estacao.parceiroId) : null;
-    const custoEnUnit = parceiro ? Number(parceiro.custoEnergia || 0) : 0;
     recsEstacao.forEach(r => {
       const key = recargaMesKey(r);
       if (!key) return;

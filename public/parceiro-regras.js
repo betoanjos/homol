@@ -65,5 +65,21 @@
     };
   }
 
-  window.EVParceiroRegras = { valorCobrado, foiCobrada, separarPorCobranca, baseDoRelatorio };
+  // Quanto da mensalidade do integrador é efetivamente cobrado no mês.
+  //
+  // A mensalidade é receita da rede, cobrada do parceiro por abatimento no
+  // repasse — não é um custo da operação. Por isso ela só pode ser cobrada
+  // até onde o repasse alcança: se o mês não gerou repasse, o parceiro não
+  // paga nada, e o resultado nunca fica negativo. Sem esse limite, um mês sem
+  // recargas aparecia como prejuízo do valor cheio da mensalidade.
+  //
+  // O saldo não cobrado não é acumulado para os meses seguintes.
+  function mensalidadeCobravel(mensalidade, repasseBruto) {
+    const devida = Number(mensalidade || 0) || 0;
+    const disponivel = Number(repasseBruto || 0) || 0;
+    if (devida <= 0 || disponivel <= 0) return 0;
+    return Math.min(devida, disponivel);
+  }
+
+  window.EVParceiroRegras = { valorCobrado, foiCobrada, separarPorCobranca, baseDoRelatorio, mensalidadeCobravel };
 })();

@@ -3159,10 +3159,14 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
   const mensalidade = Number(parceiro.mensalidade || 0);
 
   // Taxas operacionais (22% ou % configurado): cobradas do parceiro — receita nossa
-  // Base de cálculo da comissão = bruto - custoEnergia - taxasOperacionais - mensalidade
+  // Base de cálculo da comissão = bruto - custoEnergia - taxasOperacionais
+  //
+  // A mensalidade NÃO entra nesta base. Ela é retida do repasse (abaixo), e
+  // deduzi-la aqui também faria o parceiro pagá-la duas vezes: uma no valor
+  // cheio e outra na comissão que ele deixaria de receber sobre ela.
   const taxaOperacionalPct = Number(parceiro.taxaOperacional || 0);
   const taxaOperacional    = receitaLiquida * (taxaOperacionalPct / 100);
-  const lucroLiquido       = receitaLiquida - custoEnergia - taxaOperacional - mensalidade;
+  const lucroLiquido       = receitaLiquida - custoEnergia - taxaOperacional;
 
   // Comissão do parceiro sobre o lucro líquido
   const comissaoParceiroBruta = Math.max(0, lucroLiquido) * (Number(parceiro.comissao || 0) / 100);
@@ -3173,8 +3177,14 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
     ? Math.max(comissaoParceiroBruta, compromisoMinimo)
     : comissaoParceiroBruta;
 
-  // Repasse total ao parceiro = custo energia (se aplicável) + comissão
-  const totalRepasseParceiro = custoEnergiaRepasse + comissaoParceiro;
+  // Mensalidade do integrador: receita da rede, cobrada por abatimento no
+  // repasse. Limitada ao que o repasse comporta — mês sem repasse, o parceiro
+  // não paga e o resultado não fica negativo.
+  const repasseBruto = custoEnergiaRepasse + comissaoParceiro;
+  const mensalidadeCobrada = EVParceiroRegras.mensalidadeCobravel(mensalidade, repasseBruto);
+
+  // Repasse total ao parceiro = custo energia (se aplicável) + comissão − mensalidade
+  const totalRepasseParceiro = repasseBruto - mensalidadeCobrada;
 
   // ── Nosso lucro interno (não aparece no PDF do parceiro) ──
   // Taxa Tupi = custo nosso, pago à plataforma. Somada recarga a recarga:
@@ -3182,15 +3192,20 @@ function calcularRelatorioParceiro(parceiro, mesKey) {
   // calculada sobre o bruto Tupi (valor + cupom).
   const taxaTupiPct    = labelTaxaTupi(lista);
   const taxaTupi       = somaTaxaTupi(lista);
-  // Lucro EV Parking = receita líquida (após descontos pós-pagos) - taxa Tupi - custo energia - mensalidade - comissão parceiro
+  // Lucro EV Parking = receita líquida (após descontos pós-pagos) - taxa Tupi
+  //                    - custo energia - comissão parceiro + mensalidade cobrada
   // (taxasOperacionais já são receita nossa embutida na cobrança, não deduz como custo interno)
-  const lucroEVParking = receitaLiquida - taxaTupi - custoEnergia - mensalidade - comissaoParceiro;
+  //
+  // A mensalidade ENTRA somando: é dinheiro que fica com a rede, retido do
+  // repasse. Antes era subtraída, o que a transformava em custo e fazia um mês
+  // sem faturamento aparecer como prejuízo do valor cheio dela.
+  const lucroEVParking = receitaLiquida - taxaTupi - custoEnergia - comissaoParceiro + mensalidadeCobrada;
 
   return {
     lista, listaExibicao, bruto, descontosPosPago, receitaLiquida, kwh,
     taxaTupi, taxaTupiPct,
     taxaOperacional, taxaOperacionalPct,
-    custoEnergiaUnit, custoEnergia, custoEnergiaRepasse, energiaPelaRede, mensalidade, lucroLiquido,
+    custoEnergiaUnit, custoEnergia, custoEnergiaRepasse, energiaPelaRede, mensalidade, mensalidadeCobrada, repasseBruto, lucroLiquido,
     comissaoParceiroBruta, comissaoParceiro, compromisoMinimo,
     totalRepasseParceiro, lucroEVParking, semCobranca
   };
@@ -4387,7 +4402,9 @@ function gerarPDFParceiro(id) {
     ['Energia consumida',                                   formatKwh(calc.kwh)],
     ['(-) Custo energia',                                   moneyBR(calc.custoEnergia)],
     [`(-) Taxas operacionais (${calc.taxaOperacionalPct}%)`,moneyBR(calc.taxaOperacional)],
-    ['(-) Mensalidade Integrador',                          moneyBR(calc.mensalidade)],
+    // A mensalidade não aparece aqui: esta coluna são as deduções que formam a
+    // base da comissão, e ela não entra nessa base. Ela é retida do repasse,
+    // na coluna ao lado.
   ];
 
   // Lado direito: base da comissão e repasse
@@ -4401,6 +4418,9 @@ function gerarPDFParceiro(id) {
     ...(calc.energiaPelaRede
       ? [['Custo energia (pago pela rede) *',               moneyBR(calc.custoEnergia)]]
       : [['Custo energia a repassar',                       `${moneyBR(calc.custoEnergia)} (${moneyBR(calc.custoEnergiaUnit)}/kWh)`]]),
+    // A mensalidade é retida aqui, no repasse. Só aparece quando houve
+    // cobrança — mês sem repasse não cobra nada.
+    ...(calc.mensalidadeCobrada > 0 ? [['(-) Mensalidade Integrador', moneyBR(calc.mensalidadeCobrada)]] : []),
     ['Total a receber pelo parceiro',                       moneyBR(calc.totalRepasseParceiro)],
   ];
 
@@ -4487,6 +4507,17 @@ function gerarPDFParceiro(id) {
     y += 20;
   }
 
+  // Mensalidade do integrador: retida do repasse, limitada ao que ele comporta.
+  if (calc.mensalidadeCobrada > 0) {
+    doc.setTextColor(...dark);
+    const rotulo = calc.mensalidadeCobrada < calc.mensalidade
+      ? 'Mensalidade Integrador (parcial):'
+      : 'Mensalidade Integrador:';
+    doc.text(rotulo, totalBoxX, y);
+    doc.text('- ' + moneyBR(calc.mensalidadeCobrada), valueX, y, { align: 'right' });
+    y += 20;
+  }
+
   doc.setDrawColor(220); doc.line(totalBoxX, y, valueX, y); y += 20;
   doc.setFontSize(11); doc.setTextColor(...dark); doc.setFont(undefined, 'bold');
   doc.text('TOTAL A RECEBER PELO PARCEIRO:', totalBoxX, y);
@@ -4499,9 +4530,19 @@ function gerarPDFParceiro(id) {
   }
   y += 16;
 
-  const observacao = calc.energiaPelaRede
-    ? `Observação: o custo de energia desta estação é pago diretamente à concessionária pela rede (padrão de energia em nome da rede) e por isso não integra o repasse ao parceiro, constando neste relatório apenas para composição do resultado. O total a receber pelo parceiro corresponde à comissão calculada sobre a receita antes da comissão (faturamento bruto - custo energia - taxas operacionais ${calc.taxaOperacionalPct}% - mensalidade).`
-    : `Observação: o total a receber pelo parceiro soma o custo de energia já pago pelo parceiro mais a comissão calculada sobre a receita antes da comissão (faturamento bruto - custo energia - taxas operacionais ${calc.taxaOperacionalPct}% - mensalidade).`;
+  // Explica a mensalidade só quando o parceiro tem uma cadastrada, e diz o que
+  // aconteceu quando o mês não a cobriu por inteiro.
+  const obsMensalidade = calc.mensalidade > 0
+    ? (calc.mensalidadeCobrada <= 0
+        ? ` A mensalidade do integrador não foi cobrada neste período por não haver repasse que a comportasse; o saldo não é acumulado para os meses seguintes.`
+        : (calc.mensalidadeCobrada < calc.mensalidade
+            ? ` A mensalidade do integrador (${moneyBR(calc.mensalidade)}) foi cobrada parcialmente, no limite do repasse do período (${moneyBR(calc.mensalidadeCobrada)}); a diferença não é acumulada para os meses seguintes.`
+            : ` A mensalidade do integrador (${moneyBR(calc.mensalidadeCobrada)}) é retida do repasse deste período e não afeta o cálculo da comissão.`))
+    : '';
+
+  const observacao = (calc.energiaPelaRede
+    ? `Observação: o custo de energia desta estação é pago diretamente à concessionária pela rede (padrão de energia em nome da rede) e por isso não integra o repasse ao parceiro, constando neste relatório apenas para composição do resultado. O total a receber pelo parceiro corresponde à comissão calculada sobre a receita antes da comissão (faturamento bruto - custo energia - taxas operacionais ${calc.taxaOperacionalPct}%).`
+    : `Observação: o total a receber pelo parceiro soma o custo de energia já pago pelo parceiro mais a comissão calculada sobre a receita antes da comissão (faturamento bruto - custo energia - taxas operacionais ${calc.taxaOperacionalPct}%).`) + obsMensalidade;
   const obsLinhas = doc.splitTextToSize(observacao, W - margin*2);
   checkPage((obsLinhas.length * 10) + 40);
   doc.setFontSize(8); doc.setTextColor(...gray); doc.setFont(undefined, 'normal');
@@ -5779,10 +5820,15 @@ function renderPayback() {
     const resultado = {};
     Object.entries(porMes).forEach(([mes, t]) => {
       const taxaOp        = t.recLiq * (taxaOpPct / 100);
-      const lucroBase     = t.recLiq - t.custoEn - taxaOp - mensalidade;
+      // Mesma regra do relatório: a mensalidade não entra na base da comissão.
+      const lucroBase     = t.recLiq - t.custoEn - taxaOp;
       const comissaoBruta = Math.max(0, lucroBase) * (comissaoPct / 100);
       const comissao      = minimo > 0 ? Math.max(comissaoBruta, minimo) : comissaoBruta;
-      resultado[mes] = { recLiqTotal: t.recLiq, comissao, mensalidade };
+      // É retida do repasse e limitada ao que ele comporta — receita da rede,
+      // não custo. Para energia paga pela rede, o repasse é só a comissão.
+      const repasseBruto  = (parceiro.energiaPelaRede ? 0 : t.custoEn) + comissao;
+      const mensalidadeCobrada = EVParceiroRegras.mensalidadeCobravel(mensalidade, repasseBruto);
+      resultado[mes] = { recLiqTotal: t.recLiq, comissao, mensalidade: mensalidadeCobrada };
     });
     _cacheParceiroMes.set(parceiro.id, resultado);
     return resultado;
@@ -5797,8 +5843,9 @@ function renderPayback() {
       // Rateio dos custos do parceiro pela participação da estação na receita do mês
       const cp = custosParc[mesKey];
       const share = cp && cp.recLiqTotal > 0 ? (m.recLiq / cp.recLiqTotal) : 0;
-      const custoParceiroRateado = cp ? share * (cp.comissao + cp.mensalidade) : 0;
-      // Lucro EV Parking da estação = receita líq. − taxa Tupi − custo energia − rateio(comissão + mensalidade)
+      // A mensalidade SOMA: é retida do repasse e fica com a rede, não é custo.
+      const custoParceiroRateado = cp ? share * (cp.comissao - cp.mensalidade) : 0;
+      // Lucro EV Parking da estação = receita líq. − taxa Tupi − custo energia − rateio(comissão − mensalidade)
       // Meses negativos ABATEM o acumulado do payback (não são zerados).
       const lucroLiq = m.recLiq - m.taxaTupi - m.custoEn - custoParceiroRateado;
       return { mesKey, bruto: m.bruto, kwh: m.kwh, lucroLiq };
@@ -6242,13 +6289,18 @@ function calcularLucroRedeDashboard(recargasPeriodo) {
     const taxaOp              = receitaParceiro * (taxaOpPct / 100);
 
     custoEnergia += custoParceiro;
-    mensalidadeParceiros += mensalidade;
 
-    // Mesma base do relatório de parceiro: receita líquida - energia - taxas operacionais - mensalidade.
-    const lucroLiquidoParceiro = receitaParceiro - custoParceiro - taxaOp - mensalidade;
+    // Mesma base do relatório de parceiro: receita líquida - energia - taxas
+    // operacionais. A mensalidade não entra na base da comissão.
+    const lucroLiquidoParceiro = receitaParceiro - custoParceiro - taxaOp;
     const comissaoBruta = Math.max(0, lucroLiquidoParceiro) * (Number(p.comissao || 0) / 100);
     const compromissoMin = Number(p.compromisoMinimo || 0);
-    comissaoParceiro += compromissoMin > 0 ? Math.max(comissaoBruta, compromissoMin) : comissaoBruta;
+    const comissaoDoParceiro = compromissoMin > 0 ? Math.max(comissaoBruta, compromissoMin) : comissaoBruta;
+    comissaoParceiro += comissaoDoParceiro;
+
+    // Só entra como receita o que o repasse do mês comportou.
+    const repasseBrutoParceiro = (p.energiaPelaRede ? 0 : custoParceiro) + comissaoDoParceiro;
+    mensalidadeParceiros += EVParceiroRegras.mensalidadeCobravel(mensalidade, repasseBrutoParceiro);
   });
 
   recargasPeriodo.forEach(r => {

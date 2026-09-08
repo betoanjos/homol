@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 global.window = {};
 await import('../public/parceiro-regras.js');
-const { valorCobrado, foiCobrada, separarPorCobranca, baseDoRelatorio } = window.EVParceiroRegras;
+const { valorCobrado, foiCobrada, separarPorCobranca, baseDoRelatorio, mensalidadeCobravel } = window.EVParceiroRegras;
 
 // Esta regra decide o que entra no repasse ao parceiro. Incluir uma recarga
 // gratuita faz a rede pagar kWh que o parceiro ofereceu de graça; excluir uma
@@ -117,4 +117,48 @@ test('recarga editada com valor volta para os dois lados', () => {
   assert.deepEqual(base.map(r => r.uid), ['PAGA1', 'GRATIS', 'PAGA2']);
   assert.deepEqual(exibicao.map(r => r.uid), ['PAGA1', 'GRATIS', 'PAGA2']);
   assert.equal(semCobranca.quantidade, 0);
+});
+
+// ─── Mensalidade do integrador ──────────────────────────────────────────────
+// É receita da rede, cobrada por abatimento no repasse. Nunca pode virar
+// prejuízo: mês sem repasse, parceiro não paga.
+
+test('mês sem repasse não cobra mensalidade', () => {
+  // Serra Alta em agosto/2026: nenhuma recarga. Aparecia como -140.
+  assert.equal(mensalidadeCobravel(140, 0), 0);
+});
+
+test('repasse maior que a mensalidade cobra o valor cheio', () => {
+  assert.equal(mensalidadeCobravel(140, 604.8), 140);
+  assert.equal(mensalidadeCobravel(140, 140), 140, 'exatamente igual ainda cobra tudo');
+});
+
+test('repasse menor cobra só o que houver', () => {
+  assert.equal(mensalidadeCobravel(140, 90), 90);
+  assert.equal(mensalidadeCobravel(140, 0.5), 0.5);
+});
+
+test('nunca devolve valor negativo', () => {
+  // Repasse negativo não deveria existir, mas se aparecer não pode virar
+  // "mensalidade negativa" e creditar o parceiro.
+  assert.equal(mensalidadeCobravel(140, -50), 0);
+  assert.equal(mensalidadeCobravel(-140, 500), 0);
+});
+
+test('parceiro sem mensalidade cadastrada não é cobrado', () => {
+  assert.equal(mensalidadeCobravel(0, 1000), 0);
+  assert.equal(mensalidadeCobravel(null, 1000), 0);
+  assert.equal(mensalidadeCobravel(undefined, 1000), 0);
+});
+
+test('valores inválidos não quebram o cálculo', () => {
+  assert.equal(mensalidadeCobravel('abc', 1000), 0);
+  assert.equal(mensalidadeCobravel(140, 'abc'), 0);
+});
+
+test('o repasse nunca fica negativo por causa da mensalidade', () => {
+  for (const repasse of [0, 10, 90, 140, 500]) {
+    const cobrada = mensalidadeCobravel(140, repasse);
+    assert.ok(repasse - cobrada >= 0, `repasse ${repasse} ficaria negativo`);
+  }
 });

@@ -73,9 +73,19 @@ async function loadState() {
     // Reidratar os mapas de ID/alias com as estações cadastradas (o mapa fixo
     // no código só cobre as estações antigas; sem isso, estações novas perdem
     // o vínculo por ID após recarregar a página)
+    invalidarIndiceEstacoes();
+    // Contagem por ID Tupi: quando o mesmo equipamento tem mais de um cadastro
+    // (mudou de local/parceiro), o mapa plano não consegue representar os dois.
+    // Quem resolve esses casos é o índice com vigência; escrever aqui faria o
+    // mapa apontar para um cadastro só, arrastando o histórico do outro.
+    const _porId = {};
     (estacoes || []).forEach(e => {
       const idN = String(e.idTupi || '').replace(/\D/g, '');
-      if (idN) ESTACAO_ID_MAP[idN] = e.nome;
+      if (idN) _porId[idN] = (_porId[idN] || 0) + 1;
+    });
+    (estacoes || []).forEach(e => {
+      const idN = String(e.idTupi || '').replace(/\D/g, '');
+      if (idN && _porId[idN] === 1) ESTACAO_ID_MAP[idN] = e.nome;
       const nLow = String(e.nome || '').toLowerCase().replace(/\s+/g, ' ').trim();
       if (nLow && !ESTACAO_ALIASES[nLow]) ESTACAO_ALIASES[nLow] = e.nome;
     });
@@ -2886,13 +2896,39 @@ const ESTACAO_ID_MAP = {
   '1125564521': 'M7 Mafra 22kW AC',
 };
 
+// Índice idTupi → cadastros de estação, com cache: normalizarEstacao roda uma
+// vez por recarga, e remontar o índice a cada chamada custaria caro nas telas
+// de relatório. Invalidado ao salvar/excluir estação e ao recarregar o estado.
+let _idxEstacoes = null;
+let _idxEstacoesRef = null;
+let _idxEstacoesLen = -1;
+
+function invalidarIndiceEstacoes() { _idxEstacoes = null; }
+
+function indiceEstacoesPorIdTupi() {
+  if (_idxEstacoes && _idxEstacoesRef === estacoes && _idxEstacoesLen === estacoes.length) return _idxEstacoes;
+  _idxEstacoes = EVEstacaoVigencia.indexarPorIdTupi(estacoes);
+  _idxEstacoesRef = estacoes;
+  _idxEstacoesLen = estacoes.length;
+  return _idxEstacoes;
+}
+
 function normalizarEstacao(r) {
   const removePublica = s => String(s || '').replace(/^P[uú]blica\s+/i, '').trim();
   const norm = s => removePublica(s).toLowerCase().replace(/\s+/g, ' ').trim();
 
-  // 1. idEstacao numérico conhecido → retornar canônico direto
-  if (r.idEstacao && /^\d+$/.test(String(r.idEstacao)) && ESTACAO_ID_MAP[String(r.idEstacao)]) {
-    return ESTACAO_ID_MAP[String(r.idEstacao)];
+  // 1. idEstacao numérico conhecido → nome canônico.
+  //    Quando o mesmo equipamento mudou de local/parceiro, há mais de um
+  //    cadastro com esse ID Tupi: escolhemos o que valia NA DATA da recarga,
+  //    para que o histórico não migre junto com o equipamento.
+  if (r.idEstacao && /^\d+$/.test(String(r.idEstacao))) {
+    const id = String(r.idEstacao);
+    const cadastros = indiceEstacoesPorIdTupi().get(id);
+    if (cadastros && cadastros.length) {
+      const escolhida = EVEstacaoVigencia.escolherPorData(cadastros, r.data);
+      if (escolhida) return escolhida.nome;
+    }
+    if (ESTACAO_ID_MAP[id]) return ESTACAO_ID_MAP[id];
   }
 
   // 2. Tentar alias com todos os campos disponíveis (nomeEstacao, equipamento, local)
@@ -2944,8 +2980,14 @@ function garantirEstacaoDetectada(idTupi, nomeEstacao) {
     || nome;
   const normNome = v => String(v || '').toLowerCase().replace(/^p[uú]blica\s+/i, '').replace(/\s+/g, ' ').trim();
 
-  // 1º critério: ID Tupi (vínculo definitivo — nunca duplica se o ID bater)
-  let existente = id ? estacoes.find(e => normalizarIdTupi(e.idTupi) === id) : null;
+  // 1º critério: ID Tupi (vínculo definitivo — nunca duplica se o ID bater).
+  // Havendo mais de um cadastro para o mesmo equipamento, vale o vigente: é
+  // dele o nome que deve ser gravado nas recargas que estão chegando agora.
+  let existente = null;
+  if (id) {
+    const mesmoId = estacoes.filter(e => normalizarIdTupi(e.idTupi) === id);
+    existente = mesmoId.length > 1 ? EVEstacaoVigencia.escolherPorData(mesmoId, '') : (mesmoId[0] || null);
+  }
 
   // 2º critério: nome exato ou canônico (para cadastros ainda sem ID)
   if (!existente) {
@@ -3001,8 +3043,20 @@ function repararEstacoesInvalidas() {
   // IDs de estação conhecidos — uids com esse valor são objetos fantasma, não recargas reais
   const IDS_ESTACAO = new Set(Object.keys(ESTACAO_ID_MAP));
 
+  // IDs Tupi com mais de um cadastro: é o mesmo equipamento que mudou de local
+  // e de parceiro, com vigências diferentes. Esses cadastros são propositais —
+  // não podem ser renomeados para um nome comum nem tratados como duplicata,
+  // ou o reparo apagaria a separação do histórico.
+  const contagemPorId = {};
+  estacoes.forEach(e => {
+    const id = String(e.idTupi || '').replace(/\D/g, '');
+    if (id) contagemPorId[id] = (contagemPorId[id] || 0) + 1;
+  });
+  const compartilhaIdTupi = e => contagemPorId[String(e.idTupi || '').replace(/\D/g, '')] > 1;
+
   // Corrigir nomes antigos nas estações cadastradas
   estacoes.forEach(e => {
+    if (compartilhaIdTupi(e)) return;
     const nLow = e.nome.toLowerCase().replace(/\s+/g,' ');
     const canon = ESTACAO_ALIASES[nLow] || (e.idTupi && ESTACAO_ID_MAP[e.idTupi]);
     if (canon && canon !== e.nome) {
@@ -3017,7 +3071,11 @@ function repararEstacoesInvalidas() {
   const canonParaVencedor = {};
   estacoes.forEach(e => {
     const nLow = e.nome.toLowerCase().replace(/\s+/g, ' ');
-    const canon = (e.idTupi && ESTACAO_ID_MAP[e.idTupi]) || ESTACAO_ALIASES[nLow] || e.nome;
+    // Cadastros que dividem o ID Tupi respondem por si: a chave é o próprio
+    // nome, senão um seria eliminado como fantasma do outro.
+    const canon = compartilhaIdTupi(e)
+      ? e.nome
+      : ((e.idTupi && ESTACAO_ID_MAP[e.idTupi]) || ESTACAO_ALIASES[nLow] || e.nome);
     const score = (Number(e.investimento || 0) > 0 ? 4 : 0)
       + (e.parceiroId ? 2 : 0) + (e.idTupi ? 1 : 0)
       + ((e.documentos?.length || 0) > 0 ? 1 : 0);
@@ -5172,6 +5230,8 @@ function openModalEstacao(id = null) {
   set('obs',             e?.obs || '');
   set('investimento',    e?.investimento || '');
   set('dataInauguracao', e?.dataInauguracao || '');
+  set('vigenciaInicio',  e?.vigenciaInicio || '');
+  set('vigenciaFim',     e?.vigenciaFim || '');
   // Popular select de parceiros
   const sel = document.getElementById('est-parceiroId');
   sel.innerHTML = '<option value="">— sem parceiro —</option>'
@@ -5278,13 +5338,22 @@ function salvarEstacao() {
     investimento:     Number(get('investimento') || 0),
     dataInauguracao:  get('dataInauguracao') || '',
     documentos:       [...estacaoDocsBuffer],
+    vigenciaInicio:   get('vigenciaInicio') || '',
+    vigenciaFim:      get('vigenciaFim') || '',
     criadoEm:         editingEstacaoId ? estacoes.find(x=>x.id===editingEstacaoId)?.criadoEm : new Date().toISOString(),
     atualizadoEm:     new Date().toISOString()
   };
 
-  // Atualizar ESTACAO_ID_MAP em memória com o nome canônico desta estação
+  // O índice por ID Tupi guarda cadastros e vigências — precisa ser refeito.
+  invalidarIndiceEstacoes();
+
+  // Atualizar ESTACAO_ID_MAP em memória com o nome canônico desta estação.
+  // Quando o mesmo ID Tupi tem mais de um cadastro (equipamento que mudou de
+  // local), o mapa não consegue representar os dois: quem resolve é o índice
+  // com vigência, e escrever aqui só faria o mapa mentir.
   if (obj.idTupi) {
-    ESTACAO_ID_MAP[obj.idTupi] = obj.nome;
+    const irmaos = (estacoes || []).filter(e => e.id !== obj.id && String(e.idTupi || '').replace(/\D/g, '') === obj.idTupi);
+    if (!irmaos.length) ESTACAO_ID_MAP[obj.idTupi] = obj.nome;
     // Também registrar alias para normalização de recargas antigas (PDF)
     const nLow = obj.nome.toLowerCase().replace(/\s+/g, ' ');
     if (!ESTACAO_ALIASES[nLow]) ESTACAO_ALIASES[nLow] = obj.nome;
@@ -5306,9 +5375,14 @@ function salvarEstacao() {
     estacoes.push(obj);
     toast('Estação cadastrada!', 'success');
   }
-  // Sincronizar equipamentos no parceiro vinculado
+  invalidarIndiceEstacoes();
+  // Sincronizar equipamentos no parceiro vinculado. Com vigência, o nome do
+  // ESTACAO_ID_MAP pode ser o do outro cadastro que divide o mesmo ID Tupi —
+  // aí vale o nome deste cadastro, que é o que a normalização devolve para as
+  // recargas da janela dele.
   if (obj.parceiroId) {
-    const nomeCanonEst = (obj.idTupi && ESTACAO_ID_MAP[obj.idTupi]) || obj.nome;
+    const compartilhaId = (estacoes || []).some(e => e.id !== obj.id && String(e.idTupi || '').replace(/\D/g, '') === obj.idTupi);
+    const nomeCanonEst = (!compartilhaId && obj.idTupi && ESTACAO_ID_MAP[obj.idTupi]) || obj.nome;
     const parceiroVinc = parceiros.find(p => p.id === obj.parceiroId);
     if (parceiroVinc && !parceiroVinc.equipamentos?.includes(nomeCanonEst)) {
       parceiroVinc.equipamentos = [...(parceiroVinc.equipamentos || []), nomeCanonEst];
@@ -5658,7 +5732,10 @@ function renderPayback() {
       // e uma sessão cancelada não pode virar energia consumida.
       if (recargaOculta(r) || r.tipoOperacao === 'sessao_cancelada') return false;
       const idRec = String(r.idEstacao || '').replace(/\D/g, '');
-      if (idEst && idRec) return idRec === idEst;               // 1º: ID com ID
+      // 1º: ID com ID — mas respeitando a vigência, senão os dois cadastros
+      // que dividem o mesmo ID Tupi reivindicariam as mesmas recargas e o
+      // histórico apareceria duas vezes.
+      if (idEst && idRec) return idRec === idEst && EVEstacaoVigencia.dentroDaVigencia(estacao, r.data);
       return normalizarEstacao(r) === estacao.nome;             // 2º: nome canônico
     });
     const porMes = {};

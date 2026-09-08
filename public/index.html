@@ -1652,6 +1652,25 @@
         <input type="date" id="est-dataInauguracao">
       </div>
       <div class="form-group full">
+        <label>Vigência deste vínculo <span style="color:var(--text3);font-weight:400">— preencha só se o equipamento mudou de local/parceiro</span>
+          <span style="font-weight:400;color:var(--text3);font-size:11px;display:block;margin-top:2px">
+            Quando o mesmo equipamento (mesmo ID Tupi) troca de ponto, cadastre-o duas vezes e
+            informe o período de cada um. As recargas ficam com o parceiro que era dono na data
+            delas, e os fechamentos já enviados não mudam. Em branco = vale para todo o histórico.
+          </span>
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px">
+          <div>
+            <label style="font-size:11px;color:var(--text3)">Início</label>
+            <input type="date" id="est-vigenciaInicio">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text3)">Fim <span style="color:var(--text3)">(último dia neste local)</span></label>
+            <input type="date" id="est-vigenciaFim">
+          </div>
+        </div>
+      </div>
+      <div class="form-group full">
         <label>Documentos da estação
           <span style="font-weight:400;color:var(--text3);font-size:11px;display:block;margin-top:2px">
             Contratos, laudos, manuais, fotos, etc. Arquivos salvos localmente no sistema.
@@ -1682,6 +1701,7 @@
 
 <script src="colecao-diff.js"></script>
 <script src="parceiro-regras.js"></script>
+<script src="estacao-vigencia.js"></script>
 <script src="app.js"></script>
 
 </body>

@@ -77,6 +77,31 @@ GET  /api/tupi/sessions/:id/user-data  # dados do usuário de uma sessão (consu
 Observação: a API Tupi **não fornece placa** do veículo. A chave para vincular a recarga ao
 cliente/parceiro no faturamento é o `document` (CPF/CNPJ) retornado no user-data.
 
+## Estação que muda de local e de parceiro
+
+Um equipamento pode sair de um ponto e entrar em outro, mantendo o mesmo ID Tupi. Como a atribuição
+de recargas é feita pela estação, simplesmente apontar o cadastro para o novo parceiro arrastaria
+**todo o histórico junto**: as recargas antigas, ocorridas no local anterior, passariam a contar no
+repasse do novo parceiro, e fechamentos já pagos mudariam sozinhos.
+
+Para isso existe a **vigência** do vínculo, em [`public/estacao-vigencia.js`](public/estacao-vigencia.js).
+Cadastre o equipamento **duas vezes**, com o mesmo ID Tupi e nomes diferentes, informando o período
+de cada um no formulário da estação:
+
+| Cadastro | ID Tupi | Parceiro | Vigência início | Vigência fim |
+|---|---|---|---|---|
+| Nome no local antigo | 1125790813 | Parceiro antigo | *(em branco)* | último dia no local |
+| Nome no local novo | 1125790813 | Parceiro novo | primeiro dia no novo local | *(em branco)* |
+
+Cada recarga é atribuída ao cadastro que valia **na data dela**. A janela é inclusiva nos dois
+extremos, então não existe dia órfão nem dia disputado na virada. Cadastro sem vigência vale para
+todo o histórico — é o caso normal, e nada muda para as estações que nunca trocaram de mãos.
+
+Isso vale tanto no relatório do parceiro quanto no Payback, que casa por ID Tupi e passou a
+respeitar a mesma janela. A rotina de reparo automático também reconhece cadastros que dividem um
+ID Tupi e não os trata como duplicata — sem isso ela renomearia um com o nome do outro e apagaria
+a separação.
+
 ## Backup
 
 O backup automático roda a cada `BACKUP_INTERVAL_HOURS` (padrão 6) e grava em

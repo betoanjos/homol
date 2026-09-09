@@ -718,6 +718,67 @@ app.get('/api/tupi/recargas', async (req, res) => {
 // Compara, para uma estação e período, o que a API Tupi retornou (tupi_sessions,
 // sempre atualizado pelo sync) contra as recargas efetivamente usadas no EV Core
 // (app_state.data.recargas). Aponta sessão a sessão de onde vem a diferença.
+// Inspeciona o payload BRUTO que a Tupi devolve, para responder se algum dado
+// que hoje não é lido chega pela API — a pergunta concreta foi desconto/cupom,
+// que o painel só conhece pelas colunas do CSV.
+//
+// O sync guarda a sessão inteira em tupi_sessions.raw, então dá para responder
+// sobre o histórico todo sem chamar a Tupi de novo. A varredura por palavra é o
+// que fecha a questão: um campo de desconto pode simplesmente não aparecer nas
+// sessões sem desconto, e olhar poucas amostras daria falso negativo.
+//
+// Uso: GET /api/tupi/campos-brutos
+app.get('/api/tupi/campos-brutos', async (_req, res) => {
+  try {
+    const total = (await pool.query('SELECT COUNT(*)::int AS n FROM tupi_sessions')).rows[0]?.n || 0;
+    if (!total) return res.json({ total: 0, aviso: 'Nenhuma sessão sincronizada ainda.' });
+
+    // Todas as chaves de primeiro nível já vistas, em qualquer sessão.
+    const chaves = (await pool.query(
+      `SELECT DISTINCT jsonb_object_keys(raw) AS chave FROM tupi_sessions ORDER BY chave`
+    )).rows.map(r => r.chave);
+
+    // Chaves dentro de total_cost, onde valores monetários costumam ficar.
+    const chavesCusto = (await pool.query(
+      `SELECT DISTINCT jsonb_object_keys(raw->'total_cost') AS chave
+         FROM tupi_sessions
+        WHERE jsonb_typeof(raw->'total_cost') = 'object'
+        ORDER BY chave`
+    )).rows.map(r => r.chave);
+
+    // Varredura textual: se nenhuma sessão contém nada parecido com desconto,
+    // a resposta é definitiva — a Tupi não manda esse dado.
+    const termos = ['coupon', 'discount', 'cupom', 'desconto', 'promo', 'voucher', 'rebate'];
+    const ocorrencias = {};
+    for (const termo of termos) {
+      const r = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM tupi_sessions WHERE raw::text ILIKE '%' || $1 || '%'`, [termo]
+      );
+      ocorrencias[termo] = r.rows[0]?.n || 0;
+    }
+
+    // Uma sessão com valor cobrado, como exemplo para leitura humana.
+    const exemplo = (await pool.query(
+      `SELECT raw FROM tupi_sessions WHERE kwh > 0 ORDER BY start_date_time DESC LIMIT 1`
+    )).rows[0]?.raw || null;
+
+    const achou = Object.values(ocorrencias).some(n => n > 0);
+    res.json({
+      total,
+      chavesDeSessao: chaves,
+      chavesDeTotalCost: chavesCusto,
+      ocorrenciasPorTermo: ocorrencias,
+      conclusao: achou
+        ? 'Há sessões contendo termos de desconto — vale inspecionar o exemplo e passar a ler o campo.'
+        : 'Nenhuma sessão contém qualquer termo de desconto/cupom. A API da Tupi não envia esse dado.',
+      exemploSessao: exemplo
+    });
+  } catch (err) {
+    console.error('Erro no diagnóstico de campos brutos:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Uso: GET /api/tupi/diagnostico?stationId=1124387764&dateFrom=2026-06-01&dateTo=2026-06-30
 // (datas interpretadas no fuso America/Sao_Paulo, inclusivas)
 app.get('/api/tupi/diagnostico', async (req, res) => {

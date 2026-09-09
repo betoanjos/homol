@@ -6146,7 +6146,20 @@ function getDashboardPeriodoAnterior(periodo) {
   const hoje = new Date();
   if (tipo === 'all') return null;
 
-  if (tipo === 'current_month')  return calcularPeriodoPadrao('last_month');
+  // Mês corrente: comparar com o mês anterior INTEIRO confronta os dias já
+  // decorridos com um mês fechado — no dia 9 são 9 dias contra 31, e a queda
+  // aparente é só o calendário. Recortamos o mês anterior no mesmo dia.
+  if (tipo === 'current_month') {
+    const t = EVPeriodoComparativo.trechoMesAnterior(hoje);
+    const ini = new Date(t.ano, t.mes, t.diaInicio);
+    const fim = new Date(t.ano, t.mes, t.diaFim);
+    return {
+      inicio: inicioDoDia(ini),
+      fim: fimDoDia(fim),
+      label: labelMesAno(ini) + EVPeriodoComparativo.rotuloParcial(t.ano, t.mes, t.diaFim),
+      tipo: 'custom'
+    };
+  }
   if (tipo === 'last_month')     return calcularPeriodoPadrao('two_months_ago');
   if (tipo === 'two_months_ago') {
     const base = new Date(hoje.getFullYear(), hoje.getMonth() - 3, 1);
@@ -6156,9 +6169,17 @@ function getDashboardPeriodoAnterior(periodo) {
     const ontem = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - 1);
     return { inicio: inicioDoDia(ontem), fim: fimDoDia(ontem), label: 'Ontem (' + ontem.toLocaleDateString('pt-BR') + ')', tipo: 'custom' };
   }
+  // Mesma lógica do mês para o ano em curso: até o mesmo dia do ano passado.
   if (tipo === 'current_year') {
-    const ano = hoje.getFullYear() - 1;
-    return { inicio: inicioDoDia(new Date(ano, 0, 1)), fim: fimDoDia(new Date(ano, 11, 31)), label: String(ano), tipo: 'custom' };
+    const t = EVPeriodoComparativo.trechoAnoAnterior(hoje);
+    const fim = new Date(t.ano, t.mesFim, t.diaFim);
+    const fechouOAno = t.mesFim === 11 && t.diaFim === 31;
+    return {
+      inicio: inicioDoDia(new Date(t.ano, t.mesInicio, t.diaInicio)),
+      fim: fimDoDia(fim),
+      label: String(t.ano) + (fechouOAno ? '' : ` · até ${fim.toLocaleDateString('pt-BR')}`),
+      tipo: 'custom'
+    };
   }
   // custom: mesma duração, imediatamente anterior
   if (periodo.inicio && periodo.fim) {
@@ -6334,6 +6355,68 @@ function getClienteRfidDashboard(r) {
   return c?.rfid || r?.rfid || '';
 }
 
+// ── Detalhe do ranking de clientes ──────────────────────────────────────────
+// Clicar num cliente do ranking abre as recargas dele no período em tela, com
+// estação, data, kWh e valor — a pergunta que o ranking sozinho não responde.
+function garantirModalRecargasCliente() {
+  if (document.getElementById('modal-recargas-cliente')) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'modal-recargas-cliente';
+  modal.innerHTML = `
+    <div class="modal modal-lg">
+      <button class="modal-close" onclick="closeModal('modal-recargas-cliente')">✕</button>
+      <div class="modal-title" id="mrc-titulo">Recargas do cliente</div>
+      <div id="mrc-sub" style="font-size:12px;color:var(--text2);margin:-8px 0 14px"></div>
+      <div id="mrc-corpo" style="max-height:60vh;overflow:auto"></div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function abrirRecargasClienteDashboard(clienteKey) {
+  if (!clienteKey) return;
+  const periodo = getDashboardPeriodo();
+  const doPeriodo = Array.isArray(window.__dashRecargasPeriodo) ? window.__dashRecargasPeriodo : [];
+  const lista = doPeriodo
+    .filter(r => (getClienteKeyDashboard(r) || normalizarTextoChave(r.nomeCliente || r.rfid || 'sem identificacao')) === clienteKey)
+    .sort((a, b) => (dataParaDate(b)?.getTime() || 0) - (dataParaDate(a)?.getTime() || 0));
+
+  garantirModalRecargasCliente();
+
+  const nome = lista.length ? getClienteNomeDashboard(lista[0]) : 'Cliente';
+  const rfid = lista.length ? getClienteRfidDashboard(lista[0]) : '';
+  const totalKwh = lista.reduce((s, r) => s + (Number(r.kwh || 0) || 0), 0);
+  const totalValor = lista.reduce((s, r) => s + valorRecarga(r), 0);
+
+  document.getElementById('mrc-titulo').textContent = nome;
+  document.getElementById('mrc-sub').innerHTML =
+    `${escapeHtml(rfid || 'sem RFID')} · ${periodo.label} · ${lista.length} recarga(s) · ` +
+    `${formatKwh(totalKwh)} · <strong style="color:var(--accent)">${formatMoneyFull(totalValor)}</strong>`;
+
+  const corpo = document.getElementById('mrc-corpo');
+  if (!lista.length) {
+    corpo.innerHTML = `<div class="empty-state" style="padding:32px"><div class="empty-icon">🔌</div><div class="empty-title">Nenhuma recarga no período</div></div>`;
+  } else {
+    corpo.innerHTML = `
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Data</th><th>Estação</th><th style="text-align:right">kWh</th><th style="text-align:right">Valor</th>
+          </tr></thead>
+          <tbody>${lista.map(r => `
+            <tr>
+              <td class="mono" style="white-space:nowrap">${escapeHtml(String(r.data || '—'))}</td>
+              <td>${escapeHtml(getEquipamentoRecarga(r) || '—')}</td>
+              <td class="mono" style="text-align:right">${(Number(r.kwh || 0) || 0).toFixed(2).replace('.', ',')}</td>
+              <td class="mono" style="text-align:right">${formatMoneyFull(valorRecarga(r))}</td>
+            </tr>`).join('')}</tbody>
+        </table>
+      </div>`;
+  }
+
+  document.getElementById('modal-recargas-cliente').classList.add('open');
+}
+
 function isClientePosPagoDashboard(r) {
   const c = r?.clienteId ? clientes.find(x => x.id === r.clienteId) : clientePorRFID(r?.rfid);
   return c?.tipo === 'pos' || r?.tipoCobranca === 'pos' || r?.tipoOperacao === 'pos_pago';
@@ -6432,7 +6515,7 @@ function updateDashboard() {
   const ranking = new Map();
   recargasPeriodo.forEach(r => {
     const key = getClienteKeyDashboard(r) || normalizarTextoChave(r.nomeCliente || r.rfid || 'sem identificacao');
-    const atual = ranking.get(key) || { nome: getClienteNomeDashboard(r), rfid: getClienteRfidDashboard(r), valor: 0, kwh: 0, recargas: 0 };
+    const atual = ranking.get(key) || { key, nome: getClienteNomeDashboard(r), rfid: getClienteRfidDashboard(r), valor: 0, kwh: 0, recargas: 0 };
     atual.valor += valorRecarga(r);
     atual.kwh += Number(r.kwh || 0) || 0;
     atual.recargas += 1;
@@ -6447,8 +6530,11 @@ function updateDashboard() {
     if (!rankingLista.length) {
       rankingWrap.innerHTML = `<div class="empty-state" style="padding:32px"><div class="empty-icon">🏆</div><div class="empty-title">Nenhum consumo no período</div><div class="empty-sub">Importe relatórios para visualizar o ranking</div></div>`;
     } else {
+      // Clicável: abre as recargas do cliente no período, para ver estação,
+      // data e valor sem precisar ir até a tela de Relatórios e filtrar.
       rankingWrap.innerHTML = rankingLista.map((item, idx) => `
-        <div class="client-mini" style="align-items:center">
+        <div class="client-mini" style="align-items:center;cursor:pointer" title="Ver recargas de ${escapeHtml(item.nome)}"
+             onclick="abrirRecargasClienteDashboard(${JSON.stringify(item.key).replace(/"/g, '&quot;')})">
           <div class="avatar ${idx < 3 ? 'avatar-green' : 'avatar-blue'}">${idx + 1}</div>
           <div class="client-mini-info">
             <div class="client-mini-name">${escapeHtml(item.nome)}</div>
@@ -6461,6 +6547,10 @@ function updateDashboard() {
   }
 
 
+
+  // Guardado para o modal de detalhe do ranking: as recargas já filtradas pelo
+  // período em tela, sem refazer o filtro no clique.
+  window.__dashRecargasPeriodo = recargasPeriodo;
 
   const rankingEstacoes = new Map();
   recargasPeriodo.forEach(r => {

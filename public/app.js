@@ -6367,7 +6367,8 @@ function garantirModalRecargasCliente() {
     <div class="modal modal-lg">
       <button class="modal-close" onclick="closeModal('modal-recargas-cliente')">✕</button>
       <div class="modal-title" id="mrc-titulo">Recargas do cliente</div>
-      <div id="mrc-sub" style="font-size:12px;color:var(--text2);margin:-8px 0 14px"></div>
+      <div id="mrc-sub" style="font-size:12px;color:var(--text2);margin:-8px 0 12px"></div>
+      <div id="mrc-desconto" style="margin:0 0 14px"></div>
       <div id="mrc-corpo" style="max-height:60vh;overflow:auto"></div>
     </div>`;
   document.body.appendChild(modal);
@@ -6392,6 +6393,47 @@ function abrirRecargasClienteDashboard(clienteKey) {
   document.getElementById('mrc-sub').innerHTML =
     `${escapeHtml(rfid || 'sem RFID')} · ${periodo.label} · ${lista.length} recarga(s) · ` +
     `${formatKwh(totalKwh)} · <strong style="color:var(--accent)">${formatMoneyFull(totalValor)}</strong>`;
+
+  // ── Situação de desconto ──────────────────────────────────────────────────
+  // O objetivo é decidir se vale oferecer desconto a quem mais recarrega.
+  // Três coisas mudam essa decisão: se o cliente está cadastrado, se já tem
+  // desconto e se o desconto dele chega a funcionar — o percentual do cadastro
+  // só é aplicado em cliente PÓS-PAGO (ver descontoPosPagoDaRecarga).
+  const cli = lista.length ? clienteDaRecarga(lista[0]) : null;
+  const pctDesconto = Number(cli?.desconto || 0);
+  const cuponsPeriodo = lista.reduce((s, r) => s + (Number(r.valorCupom || 0) || 0), 0);
+  const grupo = cli ? getGrupoCliente(cli) : null;
+
+  const chip = (texto, cor) =>
+    `<span style="display:inline-block;background:var(--surface2);border:1px solid var(--border);` +
+    `border-radius:999px;padding:4px 10px;font-size:11px;margin:0 6px 6px 0;color:${cor || 'var(--text2)'}">${texto}</span>`;
+
+  let chips = '';
+  if (!cli) {
+    chips += chip('⚠️ Cliente não cadastrado — cadastre para poder conceder desconto', 'var(--yellow)');
+  } else {
+    const tipoLabel = { pos: 'Pós-pago', pre: 'Pré-pago', avulso: 'Avulso Tupi/Wemob' }[cli.tipo] || 'Sem tipo';
+    chips += chip(tipoLabel);
+    if (grupo) chips += chip(`Grupo: ${escapeHtml(grupo.nome)}`);
+
+    if (pctDesconto > 0) {
+      chips += chip(`🏷️ Desconto cadastrado: ${pctDesconto}%`, 'var(--accent)');
+      // Armadilha silenciosa: desconto cadastrado em cliente que não é
+      // pós-pago nunca é aplicado em recarga nenhuma.
+      if (cli.tipo !== 'pos') {
+        chips += chip('⚠️ Não é aplicado: só vale para pós-pago', 'var(--yellow)');
+      }
+    } else {
+      chips += chip('Sem desconto cadastrado', 'var(--text3)');
+    }
+  }
+  if (cuponsPeriodo > 0) chips += chip(`🎟️ Cupons no período: ${formatMoneyFull(cuponsPeriodo)}`, 'var(--yellow)');
+
+  const acao = cli
+    ? `<button class="btn btn-primary btn-sm" style="margin-top:4px"
+         onclick="closeModal('modal-recargas-cliente'); openModalCliente('${cli.id}')">✏️ Editar cliente</button>`
+    : '';
+  document.getElementById('mrc-desconto').innerHTML = chips + (acao ? `<div>${acao}</div>` : '');
 
   const corpo = document.getElementById('mrc-corpo');
   if (!lista.length) {

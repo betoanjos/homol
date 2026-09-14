@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizarTelefone, mascararTelefone, mensagemPedeAbertura, lerMensagemRecebida } from '../server/portaoMensagem.js';
+import { normalizarTelefone, mascararTelefone, mensagemPedeAbertura, lerMensagemRecebida, midiaPareceUrl } from '../server/portaoMensagem.js';
 
 // Esta regra decide se a grade da estação abre. Um falso positivo abre a
 // proteção do equipamento por engano; um falso negativo deixa o motorista
@@ -70,10 +70,43 @@ test('o log guarda o telefone mascarado', () => {
 
 test('lê os nomes de campo das plataformas mais comuns', () => {
   assert.deepEqual(lerMensagemRecebida({ telefone: '5547999998888', texto: 'ABRIR' }),
-    { telefone: '5547999998888', texto: 'ABRIR' });
+    { telefone: '5547999998888', texto: 'ABRIR', midiaUrl: '' });
   assert.deepEqual(lerMensagemRecebida({ from: '+55 47 99999-8888', body: 'abrir' }),
-    { telefone: '5547999998888', texto: 'abrir' });
+    { telefone: '5547999998888', texto: 'abrir', midiaUrl: '' });
   assert.deepEqual(lerMensagemRecebida({ phone: '5547999998888', message: 'abrir' }),
-    { telefone: '5547999998888', texto: 'abrir' });
-  assert.deepEqual(lerMensagemRecebida({}), { telefone: '', texto: '' });
+    { telefone: '5547999998888', texto: 'abrir', midiaUrl: '' });
+  assert.deepEqual(lerMensagemRecebida({}), { telefone: '', texto: '', midiaUrl: '' });
+});
+
+// ─── Foto da placa ──────────────────────────────────────────────────────────
+// Pedida antes de liberar, como rastro junto do telefone e do horário. Placa é
+// dado comum; selfie e documento seriam dado pessoal sensível, com obrigação
+// desproporcional para abrir um portão.
+
+test('lê a URL da foto nos nomes de campo mais comuns', () => {
+  const url = 'https://midia.exemplo.com/abc123.jpg';
+  for (const campo of ['midiaUrl', 'media_url', 'imagem', 'foto', 'anexo', 'attachment', 'url']) {
+    assert.equal(lerMensagemRecebida({ telefone: '5547999998888', texto: 'abrir', [campo]: url }).midiaUrl, url, campo);
+  }
+});
+
+test('mensagem sem foto devolve midiaUrl vazia', () => {
+  assert.equal(lerMensagemRecebida({ telefone: '5547999998888', texto: 'abrir' }).midiaUrl, '');
+  assert.equal(lerMensagemRecebida({}).midiaUrl, '');
+});
+
+test('campo de mídia em branco não vira foto', () => {
+  assert.equal(lerMensagemRecebida({ foto: '   ' }).midiaUrl, '');
+  assert.equal(lerMensagemRecebida({ foto: null, imagem: 'https://x.com/a.jpg' }).midiaUrl, 'https://x.com/a.jpg');
+});
+
+test('só aceita como foto o que é endereço de verdade', () => {
+  assert.equal(midiaPareceUrl('https://midia.exemplo.com/abc.jpg'), true);
+  assert.equal(midiaPareceUrl('http://midia.exemplo.com/abc.jpg'), true);
+  // Algumas plataformas mandam o id interno do arquivo no mesmo campo;
+  // guardar isso como se fosse foto daria falsa sensação de registro.
+  assert.equal(midiaPareceUrl('1234567890'), false);
+  assert.equal(midiaPareceUrl('media_id:abc123'), false);
+  assert.equal(midiaPareceUrl(''), false);
+  assert.equal(midiaPareceUrl(null), false);
 });

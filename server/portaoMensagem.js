@@ -57,15 +57,40 @@ export function mensagemPedeAbertura(texto, palavraChave) {
   return false;
 }
 
+// Primeiro valor não vazio de uma lista de nomes possíveis.
+function primeiro(corpo, nomes) {
+  for (const nome of nomes) {
+    const v = corpo?.[nome];
+    if (v != null && String(v).trim() !== '') return String(v).trim();
+  }
+  return '';
+}
+
 // Interpreta o corpo recebido da plataforma de mensagens. Cada uma nomeia os
 // campos de um jeito, então aceitamos os formatos mais comuns em vez de
 // amarrar o EV Core a um fornecedor.
+//
+// `midiaUrl` é a foto da placa do veículo, pedida antes de liberar. Serve de
+// rastro junto do telefone e do horário. Foto de placa é dado comum, ao
+// contrário de selfie ou documento, que são dado pessoal sensível e trariam
+// obrigação desproporcional para abrir um portão.
 export function lerMensagemRecebida(corpo = {}) {
   const telefone = normalizarTelefone(
-    corpo.telefone ?? corpo.phone ?? corpo.from ?? corpo.sender ?? corpo.numero ?? ''
+    primeiro(corpo, ['telefone', 'phone', 'from', 'sender', 'numero'])
   );
-  const texto = String(
-    corpo.texto ?? corpo.text ?? corpo.message ?? corpo.body ?? corpo.mensagem ?? ''
-  );
-  return { telefone, texto };
+  const texto = primeiro(corpo, ['texto', 'text', 'message', 'body', 'mensagem']);
+  const midiaUrl = primeiro(corpo, [
+    'midiaUrl', 'midia_url', 'mediaUrl', 'media_url', 'midia', 'media',
+    'imagem', 'image', 'foto', 'arquivo', 'file', 'anexo', 'attachment', 'url'
+  ]);
+  return { telefone, texto, midiaUrl };
+}
+
+// A URL da mídia precisa ser buscável depois. Rejeita o que claramente não é
+// endereço — algumas plataformas mandam o identificador interno do arquivo no
+// mesmo campo, e guardar isso como se fosse foto daria falsa sensação de
+// registro.
+export function midiaPareceUrl(valor) {
+  const s = String(valor || '').trim();
+  return /^https?:\/\/\S+$/i.test(s);
 }

@@ -28,6 +28,7 @@
 //    PORTAO_PALAVRA         → palavra que libera (padrão: "abrir")
 //    PORTAO_JANELA_SEG      → validade da liberação (padrão: 90s)
 //    PORTAO_LIMITE_HORA     → máximo de aberturas por telefone/hora (padrão: 6)
+//    PORTAO_EXIGIR_FOTO     → 'true' exige a foto da placa para liberar
 // ═══════════════════════════════════════════════════════════════════════════
 import pool from './db.js';
 import { PALAVRA_PADRAO } from './portaoMensagem.js';
@@ -41,7 +42,12 @@ export function portaoConfig() {
     token: process.env.PORTAO_TOKEN || '',
     palavra: process.env.PORTAO_PALAVRA || PALAVRA_PADRAO,
     janelaSeg: Math.max(10, Number(process.env.PORTAO_JANELA_SEG || 90)),
-    limiteHora: Math.max(1, Number(process.env.PORTAO_LIMITE_HORA || 6))
+    limiteHora: Math.max(1, Number(process.env.PORTAO_LIMITE_HORA || 6)),
+    // Exigir a foto da placa para liberar. Começa desligado de propósito: se a
+    // plataforma não estiver passando a URL da imagem, ligar isso de cara
+    // deixaria o motorista trancado do lado de fora às 3 da manhã. Ligue
+    // depois de confirmar, no histórico, que a foto está chegando.
+    exigirMidia: String(process.env.PORTAO_EXIGIR_FOTO || '') === 'true'
   };
 }
 
@@ -64,6 +70,9 @@ export async function initPortaoDB() {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_portao_pendente ON portao_liberacoes (consumido_em, expira_em);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_portao_criado ON portao_liberacoes (criado_em DESC);`);
+  // Foto da placa enviada antes da liberação. Coluna adicionada depois da
+  // criação original da tabela.
+  await pool.query(`ALTER TABLE portao_liberacoes ADD COLUMN IF NOT EXISTS midia_url TEXT;`);
 }
 
 // Quantas aberturas esse telefone pediu na última hora. Evita que alguém fique
@@ -78,13 +87,13 @@ export async function aberturasNaUltimaHora(telefone) {
   return r.rows[0]?.n || 0;
 }
 
-export async function registrarLiberacao({ telefone, telefoneMascarado, origem = 'whatsapp', observacao = null }) {
+export async function registrarLiberacao({ telefone, telefoneMascarado, origem = 'whatsapp', observacao = null, midiaUrl = null }) {
   const { janelaSeg } = portaoConfig();
   const r = await pool.query(
-    `INSERT INTO portao_liberacoes (telefone, telefone_mascarado, origem, expira_em, observacao)
-     VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval, $5)
+    `INSERT INTO portao_liberacoes (telefone, telefone_mascarado, origem, expira_em, observacao, midia_url)
+     VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval, $5, $6)
      RETURNING id, criado_em, expira_em`,
-    [telefone || null, telefoneMascarado || null, origem, String(janelaSeg), observacao]
+    [telefone || null, telefoneMascarado || null, origem, String(janelaSeg), observacao, midiaUrl || null]
   );
   return r.rows[0];
 }
@@ -111,7 +120,7 @@ export async function consumirPendente() {
 
 export async function listarEventos(limite = 50) {
   const r = await pool.query(
-    `SELECT id, telefone_mascarado, origem, criado_em, expira_em, consumido_em, observacao
+    `SELECT id, telefone_mascarado, origem, criado_em, expira_em, consumido_em, observacao, midia_url
        FROM portao_liberacoes
       ORDER BY criado_em DESC
       LIMIT $1`,

@@ -125,13 +125,25 @@ https://wa.me/55DDD9XXXXXXX?text=ABRIR
 a API da Tupi só publica sessão depois de encerrada — nenhuma foi vista em andamento. Não existe
 "carregando" para observar, então o início da recarga não serve para abrir nada.
 
+**Foto da placa.** Antes de liberar, o fluxo pede uma foto da placa do veículo. Ela fica gravada
+junto do telefone e do horário, formando o rastro que serve depois de um furto. Foto de placa é
+dado comum — selfie e foto de documento seriam dado pessoal **sensível** sob a LGPD, com
+obrigação desproporcional para abrir um portão, e não segurariam um ladrão, que mandaria qualquer
+imagem.
+
 ```env
 PORTAO_WEBHOOK_SECRET=segredo-que-a-plataforma-de-mensagens-envia
 PORTAO_TOKEN=segredo-do-controlador-no-portao
 PORTAO_PALAVRA=abrir      # opcional
 PORTAO_JANELA_SEG=90      # validade da liberação
 PORTAO_LIMITE_HORA=6      # aberturas por telefone/hora
+PORTAO_EXIGIR_FOTO=false  # true passa a recusar liberação sem foto da placa
 ```
+
+`PORTAO_EXIGIR_FOTO` começa desligado de propósito: a foto é sempre gravada quando chega, mas só
+vira condição depois que você confirmar no histórico que a URL está mesmo sendo enviada pela
+automação. Ligar antes disso deixaria o motorista trancado do lado de fora às 3 da manhã por um
+campo mal mapeado.
 
 As duas rotas se autenticam por segredo compartilhado, não por sessão — quem chama são a plataforma
 de mensagens e o controlador, que não têm login. A comparação é em tempo constante

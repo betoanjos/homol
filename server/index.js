@@ -19,7 +19,7 @@ import { enviarBackup, backupRemotoConfigurado, s3Config } from './backupRemoto.
 import { initRecargasDB, listarRecargas, salvarRecargas, excluirRecargas, contarRecargas, migrarRecargasDoEstado } from './recargas.js';
 import { initFaturasDB, listarFaturas, salvarFaturas, excluirFaturas, contarFaturas, migrarFaturasDoEstado, marcarFaturaPaga } from './faturas.js';
 import { initPortaoDB, portaoConfig, portaoConfigurado, segredoConfere, registrarLiberacao, consumirPendente, listarEventos, aberturasNaUltimaHora } from './portao.js';
-import { lerMensagemRecebida, mensagemPedeAbertura, mascararTelefone } from './portaoMensagem.js';
+import { lerMensagemRecebida, mensagemPedeAbertura, mascararTelefone, midiaPareceUrl } from './portaoMensagem.js';
 
 const app = express();
 app.use(cors());
@@ -758,8 +758,9 @@ app.post('/api/portao/whatsapp', async (req, res) => {
       return res.status(401).json({ error: 'Não autorizado.' });
     }
 
-    const { telefone, texto } = lerMensagemRecebida(req.body || {});
+    const { telefone, texto, midiaUrl } = lerMensagemRecebida(req.body || {});
     const mascarado = mascararTelefone(telefone);
+    const foto = midiaPareceUrl(midiaUrl) ? midiaUrl : null;
 
     // Mensagem comum no mesmo número não pode acionar o trinco. Responde 200
     // para a plataforma não ficar reenviando: recebemos e decidimos ignorar.
@@ -768,6 +769,19 @@ app.post('/api/portao/whatsapp', async (req, res) => {
     }
     if (!telefone) {
       return res.json({ ok: true, abriu: false, motivo: 'sem telefone identificado' });
+    }
+
+    // Foto da placa: rastro que fica junto do telefone e do horário. Só barra
+    // a abertura quando PORTAO_EXIGIR_FOTO=true — assim dá para ligar o fluxo,
+    // confirmar no histórico que a URL está mesmo chegando, e só então passar
+    // a exigir. Exigir antes de confirmar deixaria o motorista trancado do
+    // lado de fora às 3 da manhã por um campo mal mapeado na automação.
+    if (cfg.exigirMidia && !foto) {
+      console.warn('Portão: liberação recusada por falta da foto da placa.', { telefone: mascarado });
+      return res.json({
+        ok: true, abriu: false, motivo: 'foto da placa não recebida',
+        resposta: 'Para liberar, envie também uma foto da placa do veículo.'
+      });
     }
 
     const jaPediu = await aberturasNaUltimaHora(telefone);
@@ -779,8 +793,8 @@ app.post('/api/portao/whatsapp', async (req, res) => {
       });
     }
 
-    const lib = await registrarLiberacao({ telefone, telefoneMascarado: mascarado });
-    console.log('Portão: liberação registrada.', { id: lib.id, telefone: mascarado });
+    const lib = await registrarLiberacao({ telefone, telefoneMascarado: mascarado, midiaUrl: foto });
+    console.log('Portão: liberação registrada.', { id: lib.id, telefone: mascarado, comFoto: Boolean(foto) });
 
     // `resposta` é o texto que a plataforma deve devolver ao motorista.
     res.json({
@@ -788,6 +802,7 @@ app.post('/api/portao/whatsapp', async (req, res) => {
       abriu: true,
       liberacaoId: lib.id,
       validaPorSegundos: cfg.janelaSeg,
+      comFoto: Boolean(foto),
       resposta: `EV Parking — grade liberada. Você tem ${cfg.janelaSeg} segundos para abrir. Ao terminar a recarga, feche a grade: ela tranca sozinha.`
     });
   } catch (err) {
@@ -826,6 +841,7 @@ app.get('/api/portao/eventos', async (req, res) => {
       palavra: cfg.palavra,
       janelaSeg: cfg.janelaSeg,
       limiteHora: cfg.limiteHora,
+      exigeFoto: cfg.exigirMidia,
       eventos: await listarEventos(req.query.limite)
     });
   } catch (err) {

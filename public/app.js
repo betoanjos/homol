@@ -859,6 +859,7 @@ function goTo(page) {
     'contas-receber': 'Contas a Receber',
     'fluxo-caixa':    'Fluxo de Caixa',
     'config-fin':     'Configurações Financeiras',
+    portao:           'Acessos da Grade',
   };
   document.getElementById('page-title').textContent = titles[page] || page;
 
@@ -883,6 +884,7 @@ function goTo(page) {
   if (page === 'contas-receber') renderContasReceber();
   if (page === 'fluxo-caixa') renderFluxoCaixa();
   if (page === 'config-fin') renderConfigFin();
+  if (page === 'portao')     renderPortao();
   if (page === 'emitir') {
     const mesPend = document.getElementById('mes-pendentes');
     if (mesPend && !mesPend.value) mesPend.value = getMesAtualKey();
@@ -6848,6 +6850,105 @@ garantirModalConfigRede();
 updateDashboard();
 // Carrega do servidor e, em seguida, importa automaticamente as recargas da API.
 // Depois, revalida a cada 30 minutos enquanto o app estiver aberto (sem botão).
+// ═══════════════════════════════════════
+//  ACESSOS DA GRADE
+// ═══════════════════════════════════════
+// Histórico de quem liberou a grade de proteção da estação. É o rastro que
+// sobra depois de um furto: telefone verificado pelo WhatsApp, horário e foto
+// da placa do veículo.
+//
+// Os dados vêm de /api/portao/eventos e não do app_state — a liberação é
+// registrada pelo servidor quando a mensagem chega, sem passar pelo painel.
+async function renderPortao() {
+  const wrap = document.getElementById('portao-content');
+  if (!wrap) return;
+  wrap.innerHTML = `<div style="padding:32px;color:var(--text3)">Carregando…</div>`;
+
+  let dados;
+  try {
+    const res = await fetch('/api/portao/eventos?limite=200');
+    if (res.status === 401) { window.location.href = '/login'; return; }
+    if (!res.ok) throw new Error('Falha ao carregar os acessos.');
+    dados = await res.json();
+  } catch (err) {
+    wrap.innerHTML = `<div class="card"><div class="empty-state" style="padding:40px">
+      <div class="empty-icon">⚠️</div><div class="empty-title">Não foi possível carregar</div>
+      <div class="empty-sub">${escapeHtml(err.message)}</div></div></div>`;
+    return;
+  }
+
+  const eventos = Array.isArray(dados.eventos) ? dados.eventos : [];
+  const agora = Date.now();
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const inicioMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+
+  const emOuApos = (e, limite) => new Date(e.criado_em).getTime() >= limite.getTime();
+  const aberturasHoje = eventos.filter(e => emOuApos(e, hoje)).length;
+  const aberturasMes  = eventos.filter(e => emOuApos(e, inicioMes)).length;
+  const comFoto       = eventos.filter(e => e.midia_url).length;
+  const ultima        = eventos[0] ? new Date(eventos[0].criado_em).toLocaleString('pt-BR') : '—';
+
+  // Situação de cada liberação. "Expirou sem uso" em tudo é o sintoma de
+  // controlador desligado — a mensagem chegou, mas ninguém acionou o trinco.
+  const situacao = e => {
+    if (e.consumido_em) return { txt: 'Trinco acionado', cor: 'var(--accent)' };
+    if (new Date(e.expira_em).getTime() < agora) return { txt: 'Expirou sem uso', cor: 'var(--text3)' };
+    return { txt: 'Aguardando controlador', cor: 'var(--blue)' };
+  };
+
+  const avisos = [];
+  if (!dados.configurado) {
+    avisos.push(`<div class="card" style="border-color:var(--yellow);margin-bottom:16px">
+      <div style="padding:14px 16px;color:var(--yellow);font-size:13px">
+        ⚠️ Liberação não configurada no servidor: faltam <code>PORTAO_WEBHOOK_SECRET</code> e/ou <code>PORTAO_TOKEN</code>.
+      </div></div>`);
+  }
+  if (dados.configurado && !dados.exigeFoto) {
+    avisos.push(`<div class="card" style="margin-bottom:16px">
+      <div style="padding:14px 16px;color:var(--text2);font-size:13px">
+        A foto da placa é registrada quando chega, mas ainda <strong>não é obrigatória</strong>.
+        Para exigir, defina <code>PORTAO_EXIGIR_FOTO=true</code>.
+      </div></div>`);
+  }
+
+  const linhas = eventos.map(e => {
+    const s = situacao(e);
+    const quando = new Date(e.criado_em).toLocaleString('pt-BR');
+    // Telefone completo só vem para administrador; os demais recebem o mascarado.
+    const fone = e.telefone || e.telefone_mascarado || '—';
+    const foto = e.midia_url
+      ? `<a href="${escapeHtml(e.midia_url)}" target="_blank" rel="noopener" title="Abrir foto da placa">
+           <img src="${escapeHtml(e.midia_url)}" loading="lazy" alt="Ver foto"
+                style="height:44px;width:64px;object-fit:cover;border-radius:6px;border:1px solid var(--border)">
+         </a>`
+      : '<span style="color:var(--text3)">—</span>';
+    return `<tr>
+      <td class="mono" style="white-space:nowrap">${escapeHtml(quando)}</td>
+      <td class="mono">${escapeHtml(fone)}</td>
+      <td>${foto}</td>
+      <td style="color:${s.cor}">${s.txt}</td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    ${avisos.join('')}
+    <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+      <div class="stat-card green"><div class="stat-value">${aberturasHoje}</div><div class="stat-label">Aberturas hoje</div></div>
+      <div class="stat-card blue"><div class="stat-value">${aberturasMes}</div><div class="stat-label">No mês</div></div>
+      <div class="stat-card yellow"><div class="stat-value">${comFoto}/${eventos.length}</div><div class="stat-label">Com foto da placa</div></div>
+      <div class="stat-card"><div class="stat-value" style="font-size:15px">${escapeHtml(ultima)}</div><div class="stat-label">Última abertura</div></div>
+    </div>
+    <div class="card">
+      ${eventos.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>Data e hora</th><th>Telefone</th><th>Placa</th><th>Situação</th></tr></thead>
+        <tbody>${linhas}</tbody>
+      </table></div>` : `<div class="empty-state" style="padding:40px">
+        <div class="empty-icon">🔓</div><div class="empty-title">Nenhuma abertura registrada</div>
+        <div class="empty-sub">As liberações aparecem aqui assim que alguém enviar a mensagem pelo QR da grade.</div>
+      </div>`}
+    </div>`;
+}
+
 loadState().then(() => {
   importarRecargasAPI({ silencioso: true });
   setInterval(() => importarRecargasAPI({ silencioso: true }), 30 * 60 * 1000);

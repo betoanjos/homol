@@ -593,6 +593,9 @@
       <div class="nav-item" onclick="location.href='/contratos.html'">
         <span class="nav-icon">✍️</span> Contratos
       </div>
+      <div class="nav-item" onclick="goTo('portao')">
+        <span class="nav-icon">🔓</span> Acessos da Grade
+      </div>
     </div>
 
     <div class="nav-section">
@@ -1173,6 +1176,17 @@
         </div>
       </div>
       <div id="payback-content"></div>
+    </div>
+
+    <div class="screen" id="screen-portao">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:28px;gap:16px;flex-wrap:wrap">
+        <div>
+          <div class="section-title">Acessos da Grade</div>
+          <div class="section-sub">Quem liberou a grade de proteção da estação, quando e com qual veículo</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="renderPortao()">🔄 Atualizar</button>
+      </div>
+      <div id="portao-content"></div>
     </div>
 
 

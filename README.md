@@ -102,6 +102,46 @@ respeitar a mesma janela. A rotina de reparo automático também reconhece cadas
 ID Tupi e não os trata como duplicata — sem isso ela renomearia um com o nome do outro e apagaria
 a separação.
 
+## Grade de proteção da estação (liberação por WhatsApp)
+
+Depois do furto dos cabos e conectores em Curitiba, a estação ganhou uma grade em volta do
+**equipamento** (não da vaga — o carro fica do lado de fora), trancada quando ninguém carrega.
+O posto funciona das 6h às 23h30; o problema é a madrugada e o domingo, quando ele fecha o dia
+inteiro e não há quem abra.
+
+**Fluxo.** O motorista toca no QR da grade, o WhatsApp abre com o texto já digitado, ele aperta
+enviar. A plataforma de mensagens chama `POST /api/portao/whatsapp`, que registra a liberação. O
+controlador no portão consulta `GET /api/portao/pendente` a cada poucos segundos e aciona o trinco.
+
+A mensagem parte do usuário de propósito: dispensa template aprovado pela Meta, não custa por
+envio, não depende da entrega ser rápida às 3 da manhã, e o número chega verificado — veio da conta
+real dele. O QR é um link comum:
+
+```text
+https://wa.me/55DDD9XXXXXXX?text=ABRIR
+```
+
+**Por que o gatilho não é a recarga.** Verificado sobre 1750 sessões (`/api/tupi/sessoes-ao-vivo`):
+a API da Tupi só publica sessão depois de encerrada — nenhuma foi vista em andamento. Não existe
+"carregando" para observar, então o início da recarga não serve para abrir nada.
+
+```env
+PORTAO_WEBHOOK_SECRET=segredo-que-a-plataforma-de-mensagens-envia
+PORTAO_TOKEN=segredo-do-controlador-no-portao
+PORTAO_PALAVRA=abrir      # opcional
+PORTAO_JANELA_SEG=90      # validade da liberação
+PORTAO_LIMITE_HORA=6      # aberturas por telefone/hora
+```
+
+As duas rotas se autenticam por segredo compartilhado, não por sessão — quem chama são a plataforma
+de mensagens e o controlador, que não têm login. A comparação é em tempo constante
+([`server/segredo.js`](server/segredo.js)). `GET /api/portao/eventos` mostra o histórico no painel e
+exige sessão como o resto da API; o telefone é gravado mascarado no log.
+
+A liberação é de uso único e expira sozinha: se ninguém acionar dentro da janela, o trinco não abre
+depois. O trinco deve travar sozinho ao fechar, para a proteção não depender de alguém lembrar de
+trancar.
+
 ## Backup
 
 O backup automático roda a cada `BACKUP_INTERVAL_HOURS` (padrão 6) e grava em

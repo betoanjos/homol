@@ -18,6 +18,8 @@ import { initEstadoDB, lerEstado, lerEstadoData, salvarEstado, listarHistorico, 
 import { enviarBackup, backupRemotoConfigurado, s3Config } from './backupRemoto.js';
 import { initRecargasDB, listarRecargas, salvarRecargas, excluirRecargas, contarRecargas, migrarRecargasDoEstado } from './recargas.js';
 import { initFaturasDB, listarFaturas, salvarFaturas, excluirFaturas, contarFaturas, migrarFaturasDoEstado, marcarFaturaPaga } from './faturas.js';
+import { initPortaoDB, portaoConfig, portaoConfigurado, segredoConfere, registrarLiberacao, consumirPendente, listarEventos, aberturasNaUltimaHora } from './portao.js';
+import { lerMensagemRecebida, mensagemPedeAbertura, mascararTelefone } from './portaoMensagem.js';
 
 const app = express();
 app.use(cors());
@@ -270,7 +272,15 @@ async function getSessionUser(req) {
 
 async function requireAuth(req, res, next) {
   try {
-    if (PUBLIC_PATHS.has(req.path) || req.path.startsWith('/api/webhooks/mercadopago') || req.path.startsWith('/api/webhooks/zapsign')) return next();
+    // /api/portao/* tem autenticação própria por segredo compartilhado: quem
+    // chama é a plataforma de WhatsApp e o controlador no portão, nenhum dos
+    // dois tem sessão de usuário. As rotas de consulta do painel ficam sob
+    // /api/portao/eventos, que exige sessão explicitamente.
+    if (PUBLIC_PATHS.has(req.path)
+        || req.path.startsWith('/api/webhooks/mercadopago')
+        || req.path.startsWith('/api/webhooks/zapsign')
+        || req.path === '/api/portao/whatsapp'
+        || req.path === '/api/portao/pendente') return next();
     const user = await getSessionUser(req);
     if (user) {
       req.user = user;
@@ -308,6 +318,7 @@ async function initParceiroArquivosDB() {
 await initEstadoDB();
 await initRecargasDB();
 await initFaturasDB();
+await initPortaoDB();
 // Move recargas e faturas que ainda estiverem no app_state para as tabelas
 // próprias. Não bloqueia o boot: se falhar, o app sobe e a migração é tentada
 // de novo no próximo restart (as operações são idempotentes).
@@ -728,6 +739,100 @@ app.get('/api/tupi/recargas', async (req, res) => {
 // sessões sem desconto, e olhar poucas amostras daria falso negativo.
 //
 // Uso: GET /api/tupi/campos-brutos
+// ── Grade de proteção da estação ────────────────────────────────────────────
+// Ver server/portao.js para o desenho e o porquê de cada decisão.
+
+// Chamado pela plataforma de WhatsApp quando chega mensagem no número.
+// Autenticado pelo segredo compartilhado, não por sessão de usuário.
+app.post('/api/portao/whatsapp', async (req, res) => {
+  const cfg = portaoConfig();
+  try {
+    if (!portaoConfigurado(cfg)) {
+      return res.status(503).json({ error: 'Liberação da grade não configurada no servidor.' });
+    }
+    // Aceita o segredo por header ou no corpo — as plataformas variam no que
+    // conseguem enviar.
+    const recebido = req.get('X-Portao-Secret') || req.body?.secret || '';
+    if (!segredoConfere(recebido, cfg.webhookSecret)) {
+      console.warn('Portão: chamada recusada por segredo inválido.', { ip: getClientIp(req) });
+      return res.status(401).json({ error: 'Não autorizado.' });
+    }
+
+    const { telefone, texto } = lerMensagemRecebida(req.body || {});
+    const mascarado = mascararTelefone(telefone);
+
+    // Mensagem comum no mesmo número não pode acionar o trinco. Responde 200
+    // para a plataforma não ficar reenviando: recebemos e decidimos ignorar.
+    if (!mensagemPedeAbertura(texto, cfg.palavra)) {
+      return res.json({ ok: true, abriu: false, motivo: 'mensagem não é pedido de abertura' });
+    }
+    if (!telefone) {
+      return res.json({ ok: true, abriu: false, motivo: 'sem telefone identificado' });
+    }
+
+    const jaPediu = await aberturasNaUltimaHora(telefone);
+    if (jaPediu >= cfg.limiteHora) {
+      console.warn('Portão: limite por hora atingido.', { telefone: mascarado, jaPediu });
+      return res.json({
+        ok: true, abriu: false, motivo: 'limite por hora atingido',
+        resposta: 'Você já solicitou a abertura várias vezes na última hora. Se houver algum problema, fale com a gente.'
+      });
+    }
+
+    const lib = await registrarLiberacao({ telefone, telefoneMascarado: mascarado });
+    console.log('Portão: liberação registrada.', { id: lib.id, telefone: mascarado });
+
+    // `resposta` é o texto que a plataforma deve devolver ao motorista.
+    res.json({
+      ok: true,
+      abriu: true,
+      liberacaoId: lib.id,
+      validaPorSegundos: cfg.janelaSeg,
+      resposta: `EV Parking — grade liberada. Você tem ${cfg.janelaSeg} segundos para abrir. Ao terminar a recarga, feche a grade: ela tranca sozinha.`
+    });
+  } catch (err) {
+    console.error('Erro na liberação da grade:', err);
+    res.status(500).json({ error: 'Erro ao processar a liberação.' });
+  }
+});
+
+// Consultado pelo controlador no portão a cada poucos segundos. Consultar em
+// vez de receber conexão dispensa IP fixo e porta aberta — funciona atrás do
+// NAT da operadora móvel.
+app.get('/api/portao/pendente', async (req, res) => {
+  const cfg = portaoConfig();
+  try {
+    if (!portaoConfigurado(cfg)) return res.status(503).json({ abrir: false });
+    const recebido = req.get('X-Portao-Token') || req.query.token || '';
+    if (!segredoConfere(recebido, cfg.token)) return res.status(401).json({ abrir: false });
+
+    const pendente = await consumirPendente();
+    if (!pendente) return res.json({ abrir: false });
+
+    console.log('Portão: trinco acionado.', { id: pendente.id, telefone: pendente.telefone_mascarado });
+    res.json({ abrir: true, liberacaoId: pendente.id });
+  } catch (err) {
+    console.error('Erro ao consultar liberação da grade:', err);
+    res.status(500).json({ abrir: false });
+  }
+});
+
+// Histórico de aberturas, para o painel. Exige sessão como o resto da API.
+app.get('/api/portao/eventos', async (req, res) => {
+  try {
+    const cfg = portaoConfig();
+    res.json({
+      configurado: portaoConfigurado(cfg),
+      palavra: cfg.palavra,
+      janelaSeg: cfg.janelaSeg,
+      limiteHora: cfg.limiteHora,
+      eventos: await listarEventos(req.query.limite)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // A API da Tupi publica a sessão enquanto ela acontece, ou só depois de
 // encerrada? É o que decide se dá para usar o início da recarga como gatilho
 // para abrir a grade de proteção da estação.

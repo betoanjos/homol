@@ -728,6 +728,66 @@ app.get('/api/tupi/recargas', async (req, res) => {
 // sessões sem desconto, e olhar poucas amostras daria falso negativo.
 //
 // Uso: GET /api/tupi/campos-brutos
+// A API da Tupi publica a sessão enquanto ela acontece, ou só depois de
+// encerrada? É o que decide se dá para usar o início da recarga como gatilho
+// para abrir a grade de proteção da estação.
+//
+// Responde a partir das sessões já sincronizadas, sem chamar a Tupi.
+// Uso: GET /api/tupi/sessoes-ao-vivo
+app.get('/api/tupi/sessoes-ao-vivo', async (_req, res) => {
+  try {
+    const total = (await pool.query('SELECT COUNT(*)::int AS n FROM tupi_sessions')).rows[0]?.n || 0;
+    if (!total) return res.json({ total: 0, aviso: 'Nenhuma sessão sincronizada ainda.' });
+
+    // Sessão em andamento não tem hora de término. Se nunca apareceu nenhuma,
+    // a API só publica o que já acabou.
+    const semFim = (await pool.query(
+      `SELECT COUNT(*)::int AS n FROM tupi_sessions WHERE end_date_time IS NULL OR raw->>'end_date_time' IS NULL`
+    )).rows[0]?.n || 0;
+
+    const porStatus = (await pool.query(
+      `SELECT COALESCE(status, '(nulo)') AS status, COUNT(*)::int AS n
+         FROM tupi_sessions GROUP BY 1 ORDER BY n DESC`
+    )).rows;
+
+    // Quanto tempo depois do fim a Tupi tocou no registro pela última vez.
+    // Perto de zero em todas = o registro nasce já encerrado.
+    const atraso = (await pool.query(
+      `SELECT ROUND(MIN(EXTRACT(EPOCH FROM (last_updated - end_date_time))))::int  AS min_seg,
+              ROUND(AVG(EXTRACT(EPOCH FROM (last_updated - end_date_time))))::int  AS media_seg,
+              ROUND(MAX(EXTRACT(EPOCH FROM (last_updated - end_date_time))))::int  AS max_seg,
+              COUNT(*) FILTER (WHERE last_updated < end_date_time)::int             AS atualizadas_antes_do_fim
+         FROM tupi_sessions
+        WHERE end_date_time IS NOT NULL AND last_updated IS NOT NULL`
+    )).rows[0] || {};
+
+    // Duração típica: com sync de hora em hora e sessões longas, se a API
+    // mostrasse sessão ao vivo teríamos capturado várias em andamento.
+    const duracao = (await pool.query(
+      `SELECT ROUND(AVG(EXTRACT(EPOCH FROM (end_date_time - start_date_time))/60))::int AS media_min,
+              ROUND(MAX(EXTRACT(EPOCH FROM (end_date_time - start_date_time))/60))::int AS max_min
+         FROM tupi_sessions
+        WHERE end_date_time IS NOT NULL AND start_date_time IS NOT NULL
+          AND end_date_time > start_date_time`
+    )).rows[0] || {};
+
+    const aoVivo = semFim > 0 || (atraso.atualizadas_antes_do_fim || 0) > 0;
+    res.json({
+      total,
+      sessoesSemHoraDeTermino: semFim,
+      porStatus,
+      atrasoDoUltimoUpdateAposOFim: atraso,
+      duracaoDasSessoes: duracao,
+      conclusao: aoVivo
+        ? 'Há sessões registradas antes de terminar — a API publica sessão ao vivo e ela pode servir de gatilho.'
+        : `Nenhuma das ${total} sessões foi vista em andamento. A API só publica sessão encerrada, então o início da recarga não serve de gatilho para a grade.`
+    });
+  } catch (err) {
+    console.error('Erro no diagnóstico de sessões ao vivo:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/tupi/campos-brutos', async (_req, res) => {
   try {
     const total = (await pool.query('SELECT COUNT(*)::int AS n FROM tupi_sessions')).rows[0]?.n || 0;

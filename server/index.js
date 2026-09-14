@@ -18,7 +18,7 @@ import { initEstadoDB, lerEstado, lerEstadoData, salvarEstado, listarHistorico, 
 import { enviarBackup, backupRemotoConfigurado, s3Config } from './backupRemoto.js';
 import { initRecargasDB, listarRecargas, salvarRecargas, excluirRecargas, contarRecargas, migrarRecargasDoEstado } from './recargas.js';
 import { initFaturasDB, listarFaturas, salvarFaturas, excluirFaturas, contarFaturas, migrarFaturasDoEstado, marcarFaturaPaga } from './faturas.js';
-import { initPortaoDB, portaoConfig, portaoConfigurado, segredoConfere, registrarLiberacao, consumirPendente, listarEventos, aberturasNaUltimaHora, tokenDaEstacao } from './portao.js';
+import { initPortaoDB, portaoConfig, portaoConfigurado, segredoConfere, registrarLiberacao, consumirPendente, listarEventos, aberturasNaUltimaHora, tokenDaEstacao, midiaJaUsada } from './portao.js';
 import { lerMensagemRecebida, mensagemPedeAbertura, mascararTelefone, midiaPareceUrl, resolverEstacaoDaMensagem } from './portaoMensagem.js';
 
 const app = express();
@@ -772,10 +772,16 @@ app.post('/api/portao/whatsapp', async (req, res) => {
     // Mensagem comum no mesmo número não pode acionar o trinco. Responde 200
     // para a plataforma não ficar reenviando: recebemos e decidimos ignorar.
     if (!estacao && !ehPadrao) {
-      return res.json({ ok: true, abriu: false, motivo: 'mensagem não é pedido de abertura' });
+      return res.json({
+        ok: true, abriu: false, motivo: 'mensagem não é pedido de abertura',
+        resposta: 'Não reconheci este pedido. Use o QR Code da grade para liberar o acesso.'
+      });
     }
     if (!telefone) {
-      return res.json({ ok: true, abriu: false, motivo: 'sem telefone identificado' });
+      return res.json({
+        ok: true, abriu: false, motivo: 'sem telefone identificado',
+        resposta: 'Não consegui identificar seu número. Tente novamente pelo QR Code da grade.'
+      });
     }
 
     // Foto da placa: rastro que fica junto do telefone e do horário. Só barra
@@ -788,6 +794,19 @@ app.post('/api/portao/whatsapp', async (req, res) => {
       return res.json({
         ok: true, abriu: false, motivo: 'foto da placa não recebida',
         resposta: 'Para liberar, envie também uma foto da placa do veículo.'
+      });
+    }
+
+    // Foto repetida vale como foto ausente. A plataforma guarda a última
+    // imagem no cadastro do contato: se a pessoa responder com texto, o campo
+    // não é atualizado e a automação reenvia a foto da vez anterior — um
+    // endereço válido, indistinguível de uma foto nova. Sem esta checagem,
+    // responder qualquer coisa abriria a grade a partir da segunda vez.
+    if (cfg.exigirMidia && foto && await midiaJaUsada(foto)) {
+      console.warn('Portão: liberação recusada por foto repetida.', { telefone: mascarado });
+      return res.json({
+        ok: true, abriu: false, motivo: 'foto da placa repetida',
+        resposta: 'Essa foto já foi usada. Tire uma foto nova da placa do veículo para liberar.'
       });
     }
 

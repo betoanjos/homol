@@ -92,6 +92,25 @@ export async function aberturasNaUltimaHora(telefone) {
   return r.rows[0]?.n || 0;
 }
 
+// A URL da foto já foi usada em alguma liberação anterior?
+//
+// A plataforma de mensagens guarda a última foto no cadastro do contato. Se a
+// pessoa responder com texto em vez de imagem, o campo não é atualizado e a
+// automação reenvia a foto da vez passada — e o servidor recebe um endereço
+// perfeitamente válido, indistinguível de uma foto nova. Foi assim que uma
+// resposta "wedf" abriu a grade em teste.
+//
+// Rastro repetido não é rastro: se a foto não é desta abertura, é como se não
+// houvesse foto.
+export async function midiaJaUsada(midiaUrl) {
+  if (!midiaUrl) return false;
+  const r = await pool.query(
+    'SELECT 1 FROM portao_liberacoes WHERE midia_url = $1 LIMIT 1',
+    [midiaUrl]
+  );
+  return r.rowCount > 0;
+}
+
 export async function registrarLiberacao({ telefone, telefoneMascarado, origem = 'whatsapp', observacao = null, midiaUrl = null, estacaoId = null, estacaoNome = null }) {
   const { janelaSeg } = portaoConfig();
   const r = await pool.query(

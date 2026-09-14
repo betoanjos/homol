@@ -842,7 +842,12 @@ app.get('/api/portao/eventos', async (req, res) => {
       janelaSeg: cfg.janelaSeg,
       limiteHora: cfg.limiteHora,
       exigeFoto: cfg.exigirMidia,
-      eventos: await listarEventos(req.query.limite)
+      // O telefone completo é o que fecha o rastro numa ocorrência — com ele,
+      // a foto e o horário, dá para ligar para a pessoa ou entregar à polícia.
+      // Fica restrito ao administrador: o perfil de leitura não precisa de uma
+      // lista de telefones de clientes na tela, e telefone é dado pessoal.
+      eventos: (await listarEventos(req.query.limite)).map(e =>
+        req.user?.role === 'admin' ? e : { ...e, telefone: undefined })
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

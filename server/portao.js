@@ -118,9 +118,12 @@ export async function consumirPendente() {
   return r.rows[0] || null;
 }
 
+// Devolve o telefone completo. Quem decide se ele chega ao usuário é a rota:
+// o número inteiro é o que fecha o rastro numa ocorrência, mas não precisa
+// ficar à vista de todo perfil que abre o painel.
 export async function listarEventos(limite = 50) {
   const r = await pool.query(
-    `SELECT id, telefone_mascarado, origem, criado_em, expira_em, consumido_em, observacao, midia_url
+    `SELECT id, telefone, telefone_mascarado, origem, criado_em, expira_em, consumido_em, observacao, midia_url
        FROM portao_liberacoes
       ORDER BY criado_em DESC
       LIMIT $1`,

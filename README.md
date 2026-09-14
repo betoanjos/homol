@@ -148,7 +148,12 @@ campo mal mapeado.
 As duas rotas se autenticam por segredo compartilhado, não por sessão — quem chama são a plataforma
 de mensagens e o controlador, que não têm login. A comparação é em tempo constante
 ([`server/segredo.js`](server/segredo.js)). `GET /api/portao/eventos` mostra o histórico no painel e
-exige sessão como o resto da API; o telefone é gravado mascarado no log.
+exige sessão como o resto da API.
+
+**Telefone no histórico.** O número completo aparece para o perfil **administrador** — com ele, a
+foto da placa e o horário, o rastro fecha: dá para ligar para a pessoa ou entregar à polícia. Os
+demais perfis veem apenas a forma mascarada (`5547•••••0023`), suficiente para reconhecer quem foi
+sem manter uma lista de telefones de clientes à vista.
 
 A liberação é de uso único e expira sozinha: se ninguém acionar dentro da janela, o trinco não abre
 depois. O trinco deve travar sozinho ao fechar, para a proteção não depender de alguém lembrar de

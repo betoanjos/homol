@@ -30,6 +30,7 @@
 //    PORTAO_LIMITE_HORA     → máximo de aberturas por telefone/hora (padrão: 6)
 //    PORTAO_EXIGIR_FOTO     → 'true' exige a foto da placa para liberar
 // ═══════════════════════════════════════════════════════════════════════════
+import crypto from 'crypto';
 import pool from './db.js';
 import { PALAVRA_PADRAO } from './portaoMensagem.js';
 import { segredoConfere } from './segredo.js';
@@ -73,6 +74,10 @@ export async function initPortaoDB() {
   // Foto da placa enviada antes da liberação. Coluna adicionada depois da
   // criação original da tabela.
   await pool.query(`ALTER TABLE portao_liberacoes ADD COLUMN IF NOT EXISTS midia_url TEXT;`);
+  // Estação a que a liberação se refere. Nulo = portão padrão, o configurado
+  // por variável de ambiente antes de existir roteamento por estação.
+  await pool.query(`ALTER TABLE portao_liberacoes ADD COLUMN IF NOT EXISTS estacao_id TEXT;`);
+  await pool.query(`ALTER TABLE portao_liberacoes ADD COLUMN IF NOT EXISTS estacao_nome TEXT;`);
 }
 
 // Quantas aberturas esse telefone pediu na última hora. Evita que alguém fique
@@ -87,13 +92,13 @@ export async function aberturasNaUltimaHora(telefone) {
   return r.rows[0]?.n || 0;
 }
 
-export async function registrarLiberacao({ telefone, telefoneMascarado, origem = 'whatsapp', observacao = null, midiaUrl = null }) {
+export async function registrarLiberacao({ telefone, telefoneMascarado, origem = 'whatsapp', observacao = null, midiaUrl = null, estacaoId = null, estacaoNome = null }) {
   const { janelaSeg } = portaoConfig();
   const r = await pool.query(
-    `INSERT INTO portao_liberacoes (telefone, telefone_mascarado, origem, expira_em, observacao, midia_url)
-     VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval, $5, $6)
+    `INSERT INTO portao_liberacoes (telefone, telefone_mascarado, origem, expira_em, observacao, midia_url, estacao_id, estacao_nome)
+     VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval, $5, $6, $7, $8)
      RETURNING id, criado_em, expira_em`,
-    [telefone || null, telefoneMascarado || null, origem, String(janelaSeg), observacao, midiaUrl || null]
+    [telefone || null, telefoneMascarado || null, origem, String(janelaSeg), observacao, midiaUrl || null, estacaoId || null, estacaoNome || null]
   );
   return r.rows[0];
 }
@@ -102,20 +107,40 @@ export async function registrarLiberacao({ telefone, telefoneMascarado, origem =
 // sozinha: se ninguém buscar dentro da janela, o trinco não é acionado depois.
 // O UPDATE ... RETURNING marca e devolve numa única instrução, então duas
 // consultas simultâneas não acionam o trinco duas vezes.
-export async function consumirPendente() {
+// Cada controlador consulta apenas a fila da SUA estação. Sem esse filtro,
+// com duas estações, uma mensagem em Curitiba faria o trinco de Mafra abrir —
+// o primeiro controlador a consultar levaria a liberação.
+//
+// estacaoId nulo = portão padrão (o configurado por variável de ambiente,
+// antes de existir roteamento por estação).
+export async function consumirPendente(estacaoId = null) {
   const r = await pool.query(
     `UPDATE portao_liberacoes
         SET consumido_em = now()
       WHERE id = (
         SELECT id FROM portao_liberacoes
          WHERE consumido_em IS NULL AND expira_em > now()
+           AND estacao_id IS NOT DISTINCT FROM $1
          ORDER BY criado_em
          LIMIT 1
          FOR UPDATE SKIP LOCKED
       )
-      RETURNING id, telefone_mascarado, criado_em`
+      RETURNING id, telefone_mascarado, criado_em, estacao_nome`,
+    [estacaoId]
   );
   return r.rows[0] || null;
+}
+
+// Segredo do controlador de cada estação, derivado do PORTAO_TOKEN.
+//
+// Derivar em vez de cadastrar evita guardar mais um segredo — e evita
+// guardá-lo no app_state, que qualquer usuário logado consegue ler. Cada
+// controlador recebe um valor distinto, então um token vazado abre apenas
+// aquela estação. Trocar o PORTAO_TOKEN rotaciona todos de uma vez.
+export function tokenDaEstacao(estacaoId, cfg = portaoConfig()) {
+  if (!cfg.token) return '';
+  if (!estacaoId) return cfg.token;   // portão padrão usa o token raiz
+  return crypto.createHmac('sha256', cfg.token).update(String(estacaoId)).digest('base64url');
 }
 
 // Devolve o telefone completo. Quem decide se ele chega ao usuário é a rota:
@@ -123,7 +148,7 @@ export async function consumirPendente() {
 // ficar à vista de todo perfil que abre o painel.
 export async function listarEventos(limite = 50) {
   const r = await pool.query(
-    `SELECT id, telefone, telefone_mascarado, origem, criado_em, expira_em, consumido_em, observacao, midia_url
+    `SELECT id, telefone, telefone_mascarado, origem, criado_em, expira_em, consumido_em, observacao, midia_url, estacao_id, estacao_nome
        FROM portao_liberacoes
       ORDER BY criado_em DESC
       LIMIT $1`,

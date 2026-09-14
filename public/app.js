@@ -5273,6 +5273,7 @@ function openModalEstacao(id = null) {
   set('obs',             e?.obs || '');
   set('investimento',    e?.investimento || '');
   set('dataInauguracao', e?.dataInauguracao || '');
+  set('palavraLiberacao', e?.palavraLiberacao || '');
   set('vigenciaInicio',  e?.vigenciaInicio || '');
   set('vigenciaFim',     e?.vigenciaFim || '');
   // Popular select de parceiros
@@ -5381,6 +5382,7 @@ function salvarEstacao() {
     investimento:     Number(get('investimento') || 0),
     dataInauguracao:  get('dataInauguracao') || '',
     documentos:       [...estacaoDocsBuffer],
+    palavraLiberacao: get('palavraLiberacao') || '',
     vigenciaInicio:   get('vigenciaInicio') || '',
     vigenciaFim:      get('vigenciaFim') || '',
     criadoEm:         editingEstacaoId ? estacoes.find(x=>x.id===editingEstacaoId)?.criadoEm : new Date().toISOString(),
@@ -6924,14 +6926,46 @@ async function renderPortao() {
       : '<span style="color:var(--text3)">—</span>';
     return `<tr>
       <td class="mono" style="white-space:nowrap">${escapeHtml(quando)}</td>
+      <td>${escapeHtml(e.estacao_nome || 'Portão padrão')}</td>
       <td class="mono">${escapeHtml(fone)}</td>
       <td>${foto}</td>
       <td style="color:${s.cor}">${s.txt}</td>
     </tr>`;
   }).join('');
 
+  // Portões configurados, com o endereço e o token de cada controlador. Só o
+  // administrador recebe (o endpoint devolve 403 para os demais), então a
+  // seção simplesmente não aparece para quem não pode ver.
+  let blocoPortoes = '';
+  try {
+    const resP = await fetch('/api/portao/portoes');
+    if (resP.ok) {
+      const { portoes = [] } = await resP.json();
+      if (portoes.length) {
+        blocoPortoes = `<div class="card" style="margin-bottom:16px">
+          <div class="card-header"><div class="card-title">Portões e controladores</div></div>
+          <div style="padding:0 16px 16px;font-size:12px;color:var(--text2)">
+            Configure cada controlador com o endereço e o token da estação dele. O token é derivado
+            do segredo do servidor e não fica gravado em lugar nenhum — trocar <code>PORTAO_TOKEN</code>
+            rotaciona todos de uma vez.
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Estação</th><th>Frase do QR</th><th>Consulta</th><th>Token do controlador</th></tr></thead>
+            <tbody>${portoes.map(p => `<tr>
+              <td>${escapeHtml(p.nome || '—')}</td>
+              <td class="mono" style="font-size:11px">${escapeHtml(p.palavra || '—')}</td>
+              <td class="mono" style="font-size:11px">${escapeHtml(p.consulta)}</td>
+              <td class="mono" style="font-size:11px;word-break:break-all">${escapeHtml(p.token || '—')}</td>
+            </tr>`).join('')}</tbody>
+          </table></div>
+        </div>`;
+      }
+    }
+  } catch { /* sem permissão ou indisponível: a seção some, o histórico continua */ }
+
   wrap.innerHTML = `
     ${avisos.join('')}
+    ${blocoPortoes}
     <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
       <div class="stat-card green"><div class="stat-value">${aberturasHoje}</div><div class="stat-label">Aberturas hoje</div></div>
       <div class="stat-card blue"><div class="stat-value">${aberturasMes}</div><div class="stat-label">No mês</div></div>
@@ -6940,7 +6974,7 @@ async function renderPortao() {
     </div>
     <div class="card">
       ${eventos.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>Data e hora</th><th>Telefone</th><th>Placa</th><th>Situação</th></tr></thead>
+        <thead><tr><th>Data e hora</th><th>Estação</th><th>Telefone</th><th>Placa</th><th>Situação</th></tr></thead>
         <tbody>${linhas}</tbody>
       </table></div>` : `<div class="empty-state" style="padding:40px">
         <div class="empty-icon">🔓</div><div class="empty-title">Nenhuma abertura registrada</div>

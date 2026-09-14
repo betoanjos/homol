@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizarTelefone, mascararTelefone, mensagemPedeAbertura, lerMensagemRecebida, midiaPareceUrl } from '../server/portaoMensagem.js';
+import { normalizarTelefone, mascararTelefone, mensagemPedeAbertura, lerMensagemRecebida, midiaPareceUrl, resolverEstacaoDaMensagem } from '../server/portaoMensagem.js';
 
 // Esta regra decide se a grade da estação abre. Um falso positivo abre a
 // proteção do equipamento por engano; um falso negativo deixa o motorista
@@ -109,4 +109,43 @@ test('só aceita como foto o que é endereço de verdade', () => {
   assert.equal(midiaPareceUrl('media_id:abc123'), false);
   assert.equal(midiaPareceUrl(''), false);
   assert.equal(midiaPareceUrl(null), false);
+});
+
+// ─── Qual estação a mensagem libera ─────────────────────────────────────────
+// Com mais de uma estação, abrir a errada é pior que não abrir: o controlador
+// da outra ponta aciona um trinco a centenas de quilômetros de quem pediu.
+
+const cwb   = { id: 'est_cwb',   nome: 'Curitiba',  palavraLiberacao: 'liberar acesso estacao ev parking' };
+const mafra = { id: 'est_mafra', nome: 'Mafra',     palavraLiberacao: 'liberar acesso estacao mafra' };
+const semFrase = { id: 'est_x',  nome: 'Sem frase' };
+
+test('a mensagem abre a estação da frase correspondente', () => {
+  assert.equal(resolverEstacaoDaMensagem([cwb, mafra], 'liberar acesso estacao mafra').id, 'est_mafra');
+  assert.equal(resolverEstacaoDaMensagem([cwb, mafra], 'LIBERAR ACESSO ESTAÇÃO EV PARKING').id, 'est_cwb');
+});
+
+test('frase que não bate com nenhuma devolve nulo', () => {
+  assert.equal(resolverEstacaoDaMensagem([cwb, mafra], 'bom dia'), null);
+  assert.equal(resolverEstacaoDaMensagem([cwb, mafra], 'liberar acesso estacao joinville'), null);
+});
+
+test('estação sem frase cadastrada nunca é escolhida', () => {
+  assert.equal(resolverEstacaoDaMensagem([semFrase], 'liberar acesso estacao ev parking'), null);
+  assert.equal(resolverEstacaoDaMensagem([semFrase, cwb], 'liberar acesso estacao ev parking').id, 'est_cwb');
+});
+
+test('entre frases sobrepostas vence a mais específica', () => {
+  // A frase genérica é prefixo da específica: sem a regra do mais longo, a
+  // ordem da lista decidiria qual trinco abre.
+  const generica = { id: 'est_gen', nome: 'Genérica', palavraLiberacao: 'liberar acesso estacao' };
+  assert.equal(resolverEstacaoDaMensagem([generica, mafra], 'liberar acesso estacao mafra').id, 'est_mafra');
+  assert.equal(resolverEstacaoDaMensagem([mafra, generica], 'liberar acesso estacao mafra').id, 'est_mafra');
+  // E a genérica continua valendo quando é a única que serve.
+  assert.equal(resolverEstacaoDaMensagem([generica, mafra], 'liberar acesso estacao').id, 'est_gen');
+});
+
+test('lista vazia ou inválida não quebra', () => {
+  assert.equal(resolverEstacaoDaMensagem([], 'liberar acesso estacao mafra'), null);
+  assert.equal(resolverEstacaoDaMensagem(null, 'liberar acesso estacao mafra'), null);
+  assert.equal(resolverEstacaoDaMensagem([null, undefined, cwb], 'liberar acesso estacao ev parking').id, 'est_cwb');
 });

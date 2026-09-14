@@ -140,6 +140,26 @@ PORTAO_LIMITE_HORA=6      # aberturas por telefone/hora
 PORTAO_EXIGIR_FOTO=false  # true passa a recusar liberação sem foto da placa
 ```
 
+**Mais de uma estação.** Cada estação com grade tem a **sua frase**, cadastrada no próprio cadastro
+dela (campo *Frase de liberação da grade*). O servidor descobre pela frase recebida a qual estação a
+mensagem se refere, e cada controlador consulta apenas a fila da sua:
+
+```text
+GET /api/portao/pendente?estacao=<id da estação>
+```
+
+Sem esse roteamento, uma mensagem em Curitiba acionaria o trinco de todas as estações — o primeiro
+controlador a consultar levaria a liberação. Quando duas frases servem para a mesma mensagem (uma é
+prefixo da outra), vence a mais longa: abrir o portão errado é pior que não abrir.
+
+O token de cada controlador é **derivado** do `PORTAO_TOKEN` por HMAC sobre o id da estação. Assim
+não há segredo novo para guardar — e nenhum deles entra no `app_state`, que qualquer usuário logado
+consegue ler. Um token vazado abre só aquela estação; trocar o `PORTAO_TOKEN` rotaciona todos de uma
+vez. Os valores aparecem na aba **Acessos da Grade**, para administrador.
+
+A frase do `PORTAO_PALAVRA` segue valendo como portão padrão, sem estação vinculada, até ser migrada
+para o cadastro de alguma estação.
+
 `PORTAO_EXIGIR_FOTO` começa desligado de propósito: a foto é sempre gravada quando chega, mas só
 vira condição depois que você confirmar no histórico que a URL está mesmo sendo enviada pela
 automação. Ligar antes disso deixaria o motorista trancado do lado de fora às 3 da manhã por um

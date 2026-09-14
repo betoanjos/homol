@@ -18,8 +18,8 @@ import { initEstadoDB, lerEstado, lerEstadoData, salvarEstado, listarHistorico, 
 import { enviarBackup, backupRemotoConfigurado, s3Config } from './backupRemoto.js';
 import { initRecargasDB, listarRecargas, salvarRecargas, excluirRecargas, contarRecargas, migrarRecargasDoEstado } from './recargas.js';
 import { initFaturasDB, listarFaturas, salvarFaturas, excluirFaturas, contarFaturas, migrarFaturasDoEstado, marcarFaturaPaga } from './faturas.js';
-import { initPortaoDB, portaoConfig, portaoConfigurado, segredoConfere, registrarLiberacao, consumirPendente, listarEventos, aberturasNaUltimaHora } from './portao.js';
-import { lerMensagemRecebida, mensagemPedeAbertura, mascararTelefone, midiaPareceUrl } from './portaoMensagem.js';
+import { initPortaoDB, portaoConfig, portaoConfigurado, segredoConfere, registrarLiberacao, consumirPendente, listarEventos, aberturasNaUltimaHora, tokenDaEstacao } from './portao.js';
+import { lerMensagemRecebida, mensagemPedeAbertura, mascararTelefone, midiaPareceUrl, resolverEstacaoDaMensagem } from './portaoMensagem.js';
 
 const app = express();
 app.use(cors());
@@ -762,9 +762,16 @@ app.post('/api/portao/whatsapp', async (req, res) => {
     const mascarado = mascararTelefone(telefone);
     const foto = midiaPareceUrl(midiaUrl) ? midiaUrl : null;
 
+    // Qual estação a mensagem libera. Cada estação tem sua frase, cadastrada
+    // no próprio cadastro dela; a frase do PORTAO_PALAVRA continua valendo
+    // como portão padrão, para a estação que já operava antes disso existir.
+    const estacoes = (await lerEstadoData())?.estacoes || [];
+    const estacao = resolverEstacaoDaMensagem(estacoes, texto);
+    const ehPadrao = !estacao && mensagemPedeAbertura(texto, cfg.palavra);
+
     // Mensagem comum no mesmo número não pode acionar o trinco. Responde 200
     // para a plataforma não ficar reenviando: recebemos e decidimos ignorar.
-    if (!mensagemPedeAbertura(texto, cfg.palavra)) {
+    if (!estacao && !ehPadrao) {
       return res.json({ ok: true, abriu: false, motivo: 'mensagem não é pedido de abertura' });
     }
     if (!telefone) {
@@ -793,8 +800,14 @@ app.post('/api/portao/whatsapp', async (req, res) => {
       });
     }
 
-    const lib = await registrarLiberacao({ telefone, telefoneMascarado: mascarado, midiaUrl: foto });
-    console.log('Portão: liberação registrada.', { id: lib.id, telefone: mascarado, comFoto: Boolean(foto) });
+    const lib = await registrarLiberacao({
+      telefone, telefoneMascarado: mascarado, midiaUrl: foto,
+      estacaoId: estacao?.id || null, estacaoNome: estacao?.nome || null
+    });
+    console.log('Portão: liberação registrada.', {
+      id: lib.id, telefone: mascarado, comFoto: Boolean(foto),
+      estacao: estacao?.nome || '(portão padrão)'
+    });
 
     // `resposta` é o texto que a plataforma deve devolver ao motorista.
     res.json({
@@ -803,6 +816,7 @@ app.post('/api/portao/whatsapp', async (req, res) => {
       liberacaoId: lib.id,
       validaPorSegundos: cfg.janelaSeg,
       comFoto: Boolean(foto),
+      estacao: estacao?.nome || null,
       resposta: `EV Parking — grade liberada. Você tem ${cfg.janelaSeg} segundos para abrir. Ao terminar a recarga, feche a grade: ela tranca sozinha.`
     });
   } catch (err) {
@@ -818,17 +832,67 @@ app.get('/api/portao/pendente', async (req, res) => {
   const cfg = portaoConfig();
   try {
     if (!portaoConfigurado(cfg)) return res.status(503).json({ abrir: false });
-    const recebido = req.get('X-Portao-Token') || req.query.token || '';
-    if (!segredoConfere(recebido, cfg.token)) return res.status(401).json({ abrir: false });
 
-    const pendente = await consumirPendente();
+    // Cada controlador consulta a fila da sua estação, com o token dela.
+    // Sem o parâmetro, é o portão padrão — a estação que já operava antes de
+    // existir roteamento, com o PORTAO_TOKEN raiz.
+    const estacaoId = String(req.query.estacao || '').trim() || null;
+    const recebido = req.get('X-Portao-Token') || req.query.token || '';
+    if (!segredoConfere(recebido, tokenDaEstacao(estacaoId, cfg))) {
+      return res.status(401).json({ abrir: false });
+    }
+
+    const pendente = await consumirPendente(estacaoId);
     if (!pendente) return res.json({ abrir: false });
 
-    console.log('Portão: trinco acionado.', { id: pendente.id, telefone: pendente.telefone_mascarado });
+    console.log('Portão: trinco acionado.', {
+      id: pendente.id, telefone: pendente.telefone_mascarado,
+      estacao: pendente.estacao_nome || '(portão padrão)'
+    });
     res.json({ abrir: true, liberacaoId: pendente.id });
   } catch (err) {
     console.error('Erro ao consultar liberação da grade:', err);
     res.status(500).json({ abrir: false });
+  }
+});
+
+// Portões configurados e o token de cada controlador, para o painel.
+//
+// Restrito ao administrador: aqui aparecem os segredos que abrem os trincos.
+// Eles são derivados do PORTAO_TOKEN e não ficam gravados em lugar nenhum —
+// guardá-los no app_state os exporia a qualquer usuário logado.
+app.get('/api/portao/portoes', async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Apenas administradores.' });
+    const cfg = portaoConfig();
+    const estacoes = (await lerEstadoData())?.estacoes || [];
+
+    const portoes = estacoes
+      .filter(e => e && String(e.palavraLiberacao || '').trim())
+      .map(e => ({
+        estacaoId: e.id,
+        nome: e.nome,
+        palavra: e.palavraLiberacao,
+        token: tokenDaEstacao(e.id, cfg),
+        consulta: `/api/portao/pendente?estacao=${encodeURIComponent(e.id)}`
+      }));
+
+    // O portão padrão só aparece enquanto a frase do ambiente não tiver sido
+    // migrada para o cadastro de alguma estação.
+    const jaMigrado = portoes.some(p => p.palavra.trim().toLowerCase() === cfg.palavra.trim().toLowerCase());
+    if (!jaMigrado) {
+      portoes.unshift({
+        estacaoId: null,
+        nome: 'Portão padrão (sem estação vinculada)',
+        palavra: cfg.palavra,
+        token: tokenDaEstacao(null, cfg),
+        consulta: '/api/portao/pendente'
+      });
+    }
+
+    res.json({ configurado: portaoConfigurado(cfg), portoes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

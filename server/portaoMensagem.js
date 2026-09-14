@@ -86,6 +86,27 @@ export function lerMensagemRecebida(corpo = {}) {
   return { telefone, texto, midiaUrl };
 }
 
+// Descobre a QUAL estação a mensagem se refere.
+//
+// O único sinal que viaja do QR até aqui é o texto, então cada estação tem a
+// sua frase, cadastrada em `palavraLiberacao`. Sem isso, com duas estações,
+// uma mensagem em Curitiba acionaria o trinco de todas — os controladores
+// consultam a mesma fila.
+//
+// Quando duas frases servem para a mesma mensagem (uma contém a outra, como
+// "liberar acesso estação" e "liberar acesso estação Mafra"), vence a MAIS
+// LONGA. A mais específica é a que o QR daquela estação manda; a curta só
+// casou por ser prefixo, e abrir o portão errado é pior que não abrir.
+export function resolverEstacaoDaMensagem(estacoes, texto) {
+  const candidatas = (estacoes || [])
+    .filter(e => e && String(e.palavraLiberacao || '').trim())
+    .filter(e => mensagemPedeAbertura(texto, e.palavraLiberacao));
+  if (!candidatas.length) return null;
+  return candidatas.reduce((melhor, e) =>
+    String(e.palavraLiberacao).trim().length > String(melhor.palavraLiberacao).trim().length ? e : melhor
+  );
+}
+
 // A URL da mídia precisa ser buscável depois. Rejeita o que claramente não é
 // endereço — algumas plataformas mandam o identificador interno do arquivo no
 // mesmo campo, e guardar isso como se fosse foto daria falsa sensação de

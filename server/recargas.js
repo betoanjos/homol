@@ -34,6 +34,19 @@ export async function initRecargasDB() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_recargas_fatura ON recargas ((dados->>'faturaId'));`);
 }
 
+// Projeção mínima para contar recargas por cliente na exportação da base.
+// Traz só os campos de vínculo — carregar o registro inteiro de milhares de
+// recargas para contar não se paga.
+export async function listarVinculosRecargas() {
+  const r = await pool.query(
+    `SELECT dados->>'clienteId' AS "clienteId",
+            dados->>'rfid'      AS rfid,
+            dados->>'email'     AS email
+       FROM recargas`
+  );
+  return r.rows;
+}
+
 export async function contarRecargas() {
   const r = await pool.query('SELECT COUNT(*)::int AS n FROM recargas');
   return r.rows[0]?.n || 0;

@@ -9,17 +9,17 @@ import { existsSync } from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import pool from './db.js';
-import { initTupiDB, syncTupi, getSyncStatus, listRecargas, iniciarSyncAgendado } from './tupiSync.js';
+import { initTupiDB, syncTupi, getSyncStatus, listRecargas, iniciarSyncAgendado, ufPorContato } from './tupiSync.js';
 import { fetchSessionUserData, tupiConfig } from './tupi.js';
 import { initAniversariosDB, processarAniversarios, enviarTesteAniversario, statusAniversarios, iniciarAgendadorAniversarios, enviarEmailGenerico, aniversariosConfigurado } from './aniversarios.js';
 import { initSegurancaDB, checarBloqueio, registrarFalhaLogin, limparFalhasLogin, twofaAtivo, twofaEmailDestino, criarOtp, validarOtp, emailCodigoHTML, emailAlertaLoginHTML, getClientIp, initDispositivosDB, confiarDispositivo, dispositivoConfiavel, revogarDispositivos, diasLembrarDispositivo } from './seguranca.js';
 import { initContratosDB, criarContratosRouter, receberWebhookZapSign, exportarContratosBackup } from './contratos/index.js';
 import { initEstadoDB, lerEstado, lerEstadoData, salvarEstado, listarHistorico, lerVersaoHistorico, restaurarVersao, ConflitoDeVersao, EstadoSuspeito } from './estado.js';
 import { enviarBackup, backupRemotoConfigurado, s3Config } from './backupRemoto.js';
-import { initRecargasDB, listarRecargas, salvarRecargas, excluirRecargas, contarRecargas, migrarRecargasDoEstado } from './recargas.js';
+import { initRecargasDB, listarRecargas, salvarRecargas, excluirRecargas, contarRecargas, migrarRecargasDoEstado, listarVinculosRecargas } from './recargas.js';
 import { initFaturasDB, listarFaturas, salvarFaturas, excluirFaturas, contarFaturas, migrarFaturasDoEstado, marcarFaturaPaga } from './faturas.js';
 import { initPortaoDB, portaoConfig, portaoConfigurado, segredoConfere, registrarLiberacao, consumirPendente, listarEventos, aberturasNaUltimaHora, tokenDaEstacao, midiaJaUsada } from './portao.js';
-import { montarCsvClientes } from './clientesCsv.js';
+import { montarCsvClientes, contarRecargasPorCliente, ufPorCliente } from './clientesCsv.js';
 import { lerMensagemRecebida, mensagemPedeAbertura, mascararTelefone, midiaPareceUrl, resolverEstacaoDaMensagem } from './portaoMensagem.js';
 
 const app = express();
@@ -876,17 +876,43 @@ app.get('/api/portao/pendente', async (req, res) => {
   }
 });
 
+// Reúne o que a segmentação precisa: a base, quantas recargas cada cliente
+// fez e a UF de cada um. Compartilhado pela exportação e pelo resumo, para os
+// dois nunca discordarem sobre quem entra na campanha.
+async function prepararSegmentoClientes(req) {
+  const estado = await lerEstadoData();
+  const clientes = estado?.clientes || [];
+  const grupos = estado?.gruposClientes || [];
+
+  const [vinculos, ufsBrutas] = await Promise.all([listarVinculosRecargas(), ufPorContato()]);
+
+  return {
+    clientes,
+    grupos,
+    opcoes: {
+      contagens: contarRecargasPorCliente(clientes, vinculos),
+      ufs: ufPorCliente(clientes, ufsBrutas),
+      minRecargas: Math.max(0, Number(req.query.minRecargas || 0)),
+      uf: String(req.query.uf || '').trim().toUpperCase()
+    }
+  };
+}
+
 // Base de clientes em CSV, para importar em ferramenta de campanha.
+// Filtros opcionais: ?minRecargas=2 (recorrentes) e ?uf=PR (por estado).
 //
 // Restrito ao administrador: é a lista de e-mails e telefones dos clientes.
 // Uso: GET /api/clientes/csv — o navegador baixa o arquivo direto.
 app.get('/api/clientes/csv', async (req, res) => {
   try {
     if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Apenas administradores.' });
-    const estado = await lerEstadoData();
-    const { csv, total, semEmail, duplicados } = montarCsvClientes(estado?.clientes || [], estado?.gruposClientes || []);
+    const { opcoes, clientes, grupos } = await prepararSegmentoClientes(req);
+    const { csv, total, semEmail, duplicados, foraDoFiltro } = montarCsvClientes(clientes, grupos, opcoes);
 
-    console.log('Exportação de clientes:', { total, semEmail, duplicados, por: req.user?.username });
+    console.log('Exportação de clientes:', {
+      total, semEmail, duplicados, foraDoFiltro,
+      minRecargas: opcoes.minRecargas, uf: opcoes.uf, por: req.user?.username
+    });
 
     const hoje = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -903,9 +929,26 @@ app.get('/api/clientes/csv', async (req, res) => {
 app.get('/api/clientes/csv/resumo', async (req, res) => {
   try {
     if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Apenas administradores.' });
-    const estado = await lerEstadoData();
-    const { total, semEmail, duplicados } = montarCsvClientes(estado?.clientes || [], estado?.gruposClientes || []);
-    res.json({ cadastrados: (estado?.clientes || []).length, exportaveis: total, semEmailValido: semEmail, duplicados });
+    const { opcoes, clientes, grupos } = await prepararSegmentoClientes(req);
+    const r = montarCsvClientes(clientes, grupos, opcoes);
+
+    // Quantos há em cada estado e quantos são recorrentes, para escolher o
+    // recorte sabendo o tamanho antes de montar a campanha.
+    const porUf = {};
+    opcoes.ufs.forEach(uf => { porUf[uf] = (porUf[uf] || 0) + 1; });
+    const recorrentes = [...opcoes.contagens.values()].filter(n => n >= 2).length;
+
+    res.json({
+      cadastrados: clientes.length,
+      exportaveis: r.total,
+      semEmailValido: r.semEmail,
+      duplicados: r.duplicados,
+      foraDoFiltro: r.foraDoFiltro,
+      semUfConhecida: r.semUfConhecida,
+      filtros: { minRecargas: opcoes.minRecargas, uf: opcoes.uf || null },
+      clientesComDuasOuMaisRecargas: recorrentes,
+      porUf
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

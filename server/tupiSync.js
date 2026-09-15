@@ -238,6 +238,37 @@ export async function syncTupi({ motivo = 'manual', full = false } = {}) {
   }
 }
 
+// Estado (UF) de cada contato, a partir dos dados de usuário da Tupi.
+//
+// O cadastro de cliente do EV Core só tem endereço em texto livre, então este
+// é o único lugar com a UF estruturada. Fica o registro mais recente de cada
+// e-mail e de cada documento — alguém que mudou de estado deve entrar no
+// recorte pelo endereço atual.
+export async function ufPorContato() {
+  const porEmail = {};
+  const porDocumento = {};
+
+  const r = await pool.query(
+    `SELECT DISTINCT ON (LOWER(email)) LOWER(email) AS email, state
+       FROM tupi_session_users
+      WHERE found = TRUE AND COALESCE(state, '') <> '' AND COALESCE(email, '') <> ''
+      ORDER BY LOWER(email), fetched_at DESC`
+  );
+  r.rows.forEach(row => { porEmail[row.email] = row.state; });
+
+  const d = await pool.query(
+    `SELECT DISTINCT ON (regexp_replace(document, '\\D', '', 'g'))
+            regexp_replace(document, '\\D', '', 'g') AS documento, state
+       FROM tupi_session_users
+      WHERE found = TRUE AND COALESCE(state, '') <> ''
+        AND COALESCE(regexp_replace(document, '\\D', '', 'g'), '') <> ''
+      ORDER BY 1, fetched_at DESC`
+  );
+  d.rows.forEach(row => { porDocumento[row.documento] = row.state; });
+
+  return { porEmail, porDocumento };
+}
+
 export async function getSyncStatus() {
   const r = await pool.query('SELECT * FROM tupi_sync_state WHERE id = 1');
   const total = await pool.query('SELECT COUNT(*)::int AS n FROM tupi_sessions');

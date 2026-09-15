@@ -19,6 +19,7 @@ import { enviarBackup, backupRemotoConfigurado, s3Config } from './backupRemoto.
 import { initRecargasDB, listarRecargas, salvarRecargas, excluirRecargas, contarRecargas, migrarRecargasDoEstado } from './recargas.js';
 import { initFaturasDB, listarFaturas, salvarFaturas, excluirFaturas, contarFaturas, migrarFaturasDoEstado, marcarFaturaPaga } from './faturas.js';
 import { initPortaoDB, portaoConfig, portaoConfigurado, segredoConfere, registrarLiberacao, consumirPendente, listarEventos, aberturasNaUltimaHora, tokenDaEstacao, midiaJaUsada } from './portao.js';
+import { montarCsvClientes } from './clientesCsv.js';
 import { lerMensagemRecebida, mensagemPedeAbertura, mascararTelefone, midiaPareceUrl, resolverEstacaoDaMensagem } from './portaoMensagem.js';
 
 const app = express();
@@ -872,6 +873,41 @@ app.get('/api/portao/pendente', async (req, res) => {
   } catch (err) {
     console.error('Erro ao consultar liberação da grade:', err);
     res.status(500).json({ abrir: false });
+  }
+});
+
+// Base de clientes em CSV, para importar em ferramenta de campanha.
+//
+// Restrito ao administrador: é a lista de e-mails e telefones dos clientes.
+// Uso: GET /api/clientes/csv — o navegador baixa o arquivo direto.
+app.get('/api/clientes/csv', async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Apenas administradores.' });
+    const estado = await lerEstadoData();
+    const { csv, total, semEmail, duplicados } = montarCsvClientes(estado?.clientes || [], estado?.gruposClientes || []);
+
+    console.log('Exportação de clientes:', { total, semEmail, duplicados, por: req.user?.username });
+
+    const hoje = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="clientes-evparking-${hoje}.csv"`);
+    // BOM para o Excel abrir os acentos corretamente.
+    res.send('﻿' + csv);
+  } catch (err) {
+    console.error('Erro ao exportar clientes:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Quantos clientes a exportação traria, sem baixar o arquivo.
+app.get('/api/clientes/csv/resumo', async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Apenas administradores.' });
+    const estado = await lerEstadoData();
+    const { total, semEmail, duplicados } = montarCsvClientes(estado?.clientes || [], estado?.gruposClientes || []);
+    res.json({ cadastrados: (estado?.clientes || []).length, exportaveis: total, semEmailValido: semEmail, duplicados });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

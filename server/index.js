@@ -893,13 +893,15 @@ async function prepararSegmentoClientes(req) {
       contagens: contarRecargasPorCliente(clientes, vinculos),
       ufs: ufPorCliente(clientes, ufsBrutas),
       minRecargas: Math.max(0, Number(req.query.minRecargas || 0)),
+      maxRecargas: req.query.maxRecargas,
       uf: String(req.query.uf || '').trim().toUpperCase()
     }
   };
 }
 
 // Base de clientes em CSV, para importar em ferramenta de campanha.
-// Filtros opcionais: ?minRecargas=2 (recorrentes) e ?uf=PR (por estado).
+// Filtros opcionais: ?minRecargas=2 (recorrentes), ?minRecargas=1&maxRecargas=1
+// (recarregaram uma vez só) e ?uf=PR (por estado).
 //
 // Restrito ao administrador: é a lista de e-mails e telefones dos clientes.
 // Uso: GET /api/clientes/csv — o navegador baixa o arquivo direto.
@@ -911,7 +913,7 @@ app.get('/api/clientes/csv', async (req, res) => {
 
     console.log('Exportação de clientes:', {
       total, semEmail, duplicados, foraDoFiltro,
-      minRecargas: opcoes.minRecargas, uf: opcoes.uf, por: req.user?.username
+      minRecargas: opcoes.minRecargas, maxRecargas: opcoes.maxRecargas, uf: opcoes.uf, por: req.user?.username
     });
 
     const hoje = new Date().toISOString().slice(0, 10);
@@ -945,7 +947,7 @@ app.get('/api/clientes/csv/resumo', async (req, res) => {
       duplicados: r.duplicados,
       foraDoFiltro: r.foraDoFiltro,
       semUfConhecida: r.semUfConhecida,
-      filtros: { minRecargas: opcoes.minRecargas, uf: opcoes.uf || null },
+      filtros: { minRecargas: opcoes.minRecargas, maxRecargas: opcoes.maxRecargas ?? null, uf: opcoes.uf || null },
       clientesComDuasOuMaisRecargas: recorrentes,
       porUf
     });

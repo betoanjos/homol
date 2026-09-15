@@ -80,6 +80,10 @@ export function montarCsvClientes(clientes = [], grupos = [], opcoes = {}) {
   const contagens = opcoes.contagens instanceof Map ? opcoes.contagens : new Map();
   const ufs = opcoes.ufs instanceof Map ? opcoes.ufs : new Map();
   const minRecargas = Math.max(0, Number(opcoes.minRecargas || 0));
+  // Teto opcional. Com minRecargas=1 e maxRecargas=1 sai exatamente quem
+  // recarregou uma unica vez — o publico de reativacao.
+  const maxRecargas = opcoes.maxRecargas == null || opcoes.maxRecargas === ''
+    ? null : Math.max(0, Number(opcoes.maxRecargas));
   const ufFiltro = String(opcoes.uf || '').trim().toUpperCase();
 
   const vistos = new Set();
@@ -102,6 +106,7 @@ export function montarCsvClientes(clientes = [], grupos = [], opcoes = {}) {
     // Filtro por UF descarta quem não tem estado conhecido: incluir "talvez
     // seja do Paraná" num recorte regional é o mesmo que não ter recorte.
     if (minRecargas && recargas < minRecargas) { foraDoFiltro++; return; }
+    if (maxRecargas != null && recargas > maxRecargas) { foraDoFiltro++; return; }
     if (ufFiltro && uf !== ufFiltro) { foraDoFiltro++; return; }
 
     vistos.add(email);

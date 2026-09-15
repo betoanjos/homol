@@ -155,3 +155,28 @@ test('sem filtro, todo mundo sai e as colunas novas vêm preenchidas', () => {
   assert.match(csv, /ana@x\.com,Ana,,,,4,PR/);
   assert.equal(semUfConhecida, 2);
 });
+
+test('teto de recargas isola quem recarregou uma vez só', () => {
+  // Público de reativação: quem experimentou e não voltou. Sem o teto, o
+  // filtro de mínimo traria também os recorrentes.
+  const contagens = new Map([['c1', 1], ['c2', 4], ['c3', 0]]);
+  const { csv, total } = montarCsvClientes(base, [], { contagens, minRecargas: 1, maxRecargas: 1 });
+  assert.equal(total, 1);
+  assert.match(csv, /ana@x\.com/);
+  assert.doesNotMatch(csv, /bruno@x\.com/, 'recorrente fica fora');
+  assert.doesNotMatch(csv, /caio@x\.com/, 'quem nunca recarregou também fica fora');
+});
+
+test('teto zero traz quem nunca recarregou', () => {
+  const contagens = new Map([['c1', 1], ['c2', 4]]);
+  const { csv, total } = montarCsvClientes(base, [], { contagens, maxRecargas: 0 });
+  assert.equal(total, 1);
+  assert.match(csv, /caio@x\.com/);
+});
+
+test('sem teto informado, nada é limitado por cima', () => {
+  const contagens = new Map([['c1', 1], ['c2', 40], ['c3', 0]]);
+  assert.equal(montarCsvClientes(base, [], { contagens }).total, 3);
+  assert.equal(montarCsvClientes(base, [], { contagens, maxRecargas: '' }).total, 3);
+  assert.equal(montarCsvClientes(base, [], { contagens, maxRecargas: null }).total, 3);
+});

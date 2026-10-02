@@ -208,7 +208,13 @@ internet poderia forjar a resposta. A intenção da grade é dificultar o acesso
 a ataque dirigido.
 
 **Pendente de teste no aparelho:** se o Railway aceita a porta 80 sem redirecionar para HTTPS (o
-aparelho provavelmente não segue redirecionamento), e se `65793` é de fato o id do módulo.
+aparelho provavelmente não segue redirecionamento).
+
+O id `65793` não precisa de teste: na documentação do objeto `sec_boxs` ele é fixo ("sempre será
+65793"). Isso também indica que o iDFace comporta **um único módulo de acionamento**, então só há um
+relé comandável — com ele ocupado pelas fechaduras, qualquer outro sinal (como o do alarme) precisa de
+outro aparelho. O tempo que o relé fica aberto vem de `relay_timeout` (ms) no mesmo objeto, e
+`auto_close_enabled` religa o relé assim que o sensor de porta abre.
 
 Especificações que importam, do datasheet: IP65, operação de **−20 °C a 40 °C** (mantenha à sombra),
 fonte de 12 V / 2 A, **1 relé** no módulo (até 30 VAC / 5 A) e **1 entrada de sensor de porta** — com

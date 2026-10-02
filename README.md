@@ -220,6 +220,69 @@ Especificações que importam, do datasheet: IP65, operação de **−20 °C a 4
 fonte de 12 V / 2 A, **1 relé** no módulo (até 30 VAC / 5 A) e **1 entrada de sensor de porta** — com
 duas portas, o sensor do iDFace enxerga só uma delas.
 
+### Alarme da gaiola (Intelbras AMT 1016 NET)
+
+O alarme é **independente do EV Core**: tudo é ligação e programação da central, sem software nosso.
+Se um cair, o outro continua.
+
+**Princípio.** A liberação da grade já fecha o contato NO do módulo do iDFace. Esse mesmo evento dá um
+pulso na zona "entrada liga" da central e **desarma**. Para **armar**, a central usa a autoativação
+por inatividade: arma sozinha quando todas as zonas estão fechadas e não há movimento pelo tempo
+programado. A gaiola fechada é, portanto, o que arma o alarme — não há segundo pulso.
+
+**Por que a PGM.** A entrada liga **alterna** a cada pulso (item 5.5 do manual: "irá trabalhar com um
+pulso"). Se a gaiola estiver toda fechada e a central já desarmada — o cliente A acabou de sair e a
+autoativação ainda não contou o tempo —, a liberação do cliente B **armaria** a central com ele
+dentro e a sirene tocaria. Com a porta aberta isso não ocorre, porque a central só arma com todas as
+zonas fechadas, mas a janela com tudo fechado existe. A PGM fecha essa janela: o pulso só chega à
+zona quando a central está armada, então a liberação só sabe desarmar.
+
+```text
+Módulo do iDFace    COM ← +12V
+                    NC  → fechaduras (+)                     (travadas enquanto energizadas)
+                    NO  → bobina do relé R1 → GND            (diodo 1N4007 na bobina)
+
+Central             PGM1 → bobina do relé Ra                 (liga enquanto a central está armada;
+                                                              diodo na bobina; ligação conforme o
+                                                              item 3.14 do guia de instalação)
+
+Zona "entrada liga" ── contato NA de R1 ── contato NA de Ra ──   (em série, como uma botoeira)
+```
+
+**Programação da central** (modo de programação, senha do instalador; 3 bipes = aceito, bipe longo = erro):
+
+| Função | Sequência |
+|---|---|
+| Zona de entrada liga | `Enter + 09 + nº da zona + Enter` |
+| Partição que ela controla | `Enter + 516 + Enter` (tecla 5 = A, 6 = B) |
+| Autoativação por inatividade | `Enter + 460 + minutos (01 a 99) + Enter` |
+| PGM1 = "Ativação do sistema", liga/desliga | `Enter + 50 + 1 + 0 + 02 + Enter` |
+
+Confira a ordem dos dígitos da PGM com `Enter + 50 + 1 + Enter` no teclado XAT 2000 LCD, que mostra o
+que ficou gravado. O tempo da autoativação é em **minutos** (mínimo 1), não segundos. Deixe a
+"ativação com zonas abertas" **desligada** — é o padrão de fábrica e é ela que impede armar com a
+gaiola aberta. Dedique a central à gaiola: com duas partições, a PGM liga se qualquer uma estiver
+armada.
+
+**Ajustes no iDFace** (objeto `sec_boxs`): `relay_timeout` entre 3000 e 5000 ms, que é a duração do
+pulso; e `auto_close_enabled` ligado para a fechadura religar quando o sensor de porta abrir.
+
+**Atraso de entrada.** Como o desarme vem antes da abertura, o atraso não é mais necessário para
+evitar disparo na liberação. Um atraso longo só dá vantagem a quem entra sem liberação; prefira 5 a
+10 s nas zonas dos sensores.
+
+**Teste na bancada antes de instalar** (central, uma zona de entrada liga, os dois relés e um botão):
+
+1. O fechamento de 3 a 5 s conta como **um** pulso? O manual diz "um pulso quando acionada"; se
+   alternar duas vezes, encurte o `relay_timeout`.
+2. Pulso com a central **armada** e tudo fechado: desarma.
+3. Pulso com a central **desarmada** e tudo fechado: **não pode armar** — é o que o relé da PGM impede.
+4. Pulso com uma zona aberta: não muda nada.
+5. A ligação da zona (NA ou NF, resistor de fim de linha) segue a convenção dos sensores com fio.
+
+Fonte: manual da AMT 1016 NET, itens 3.14, 5.5, 5.17 e 5.22.
+
+
 ## Backup
 
 O backup automático roda a cada `BACKUP_INTERVAL_HOURS` (padrão 6) e grava em

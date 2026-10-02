@@ -29,6 +29,9 @@
 //    PORTAO_JANELA_SEG      → validade da liberação (padrão: 90s)
 //    PORTAO_LIMITE_HORA     → máximo de aberturas por telefone/hora (padrão: 6)
 //    PORTAO_EXIGIR_FOTO     → 'true' exige a foto da placa para liberar
+//    PORTAO_SECBOX_ID       → id do módulo de acionamento do iDFace (padrão: 65793)
+//    PORTAO_SECBOX_REASON   → motivo da abertura no comando (padrão: 3)
+//    PORTAO_PUSH_BODY_TEXTO → 'true' manda o corpo do comando como texto
 // ═══════════════════════════════════════════════════════════════════════════
 import crypto from 'crypto';
 import pool from './db.js';
@@ -48,7 +51,12 @@ export function portaoConfig() {
     // plataforma não estiver passando a URL da imagem, ligar isso de cara
     // deixaria o motorista trancado do lado de fora às 3 da manhã. Ligue
     // depois de confirmar, no histórico, que a foto está chegando.
-    exigirMidia: String(process.env.PORTAO_EXIGIR_FOTO || '') === 'true'
+    exigirMidia: String(process.env.PORTAO_EXIGIR_FOTO || '') === 'true',
+    // iDFace em modo push (ver portaoPush.js). Id do módulo de acionamento e
+    // motivo da abertura vão no comando; os padrões são os da documentação.
+    secboxId: String(process.env.PORTAO_SECBOX_ID || '65793').trim(),
+    secboxReason: String(process.env.PORTAO_SECBOX_REASON || '3').trim(),
+    pushBodyComoTexto: String(process.env.PORTAO_PUSH_BODY_TEXTO || '') === 'true'
   };
 }
 
@@ -174,4 +182,26 @@ export async function listarEventos(limite = 50) {
     [Math.min(Math.max(Number(limite) || 50, 1), 500)]
   );
   return r.rows;
+}
+
+// Guarda o retorno do aparelho junto da liberação que acabou de ser entregue.
+//
+// Só atualiza uma liberação consumida há pouco: o /result chega logo depois do
+// comando, e um retorno solto não pode sobrescrever o registro de uma abertura
+// antiga. É o que permite distinguir, no histórico, "o aparelho recebeu a ordem"
+// de "o aparelho executou a ordem".
+export async function registrarResultadoAparelho(estacaoId, texto) {
+  await pool.query(
+    `UPDATE portao_liberacoes
+        SET observacao = $2
+      WHERE id = (
+        SELECT id FROM portao_liberacoes
+         WHERE consumido_em IS NOT NULL
+           AND consumido_em > now() - INTERVAL '2 minutes'
+           AND estacao_id IS NOT DISTINCT FROM $1
+         ORDER BY consumido_em DESC
+         LIMIT 1
+      )`,
+    [estacaoId || null, String(texto || '').slice(0, 300)]
+  );
 }

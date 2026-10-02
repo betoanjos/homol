@@ -179,6 +179,41 @@ A liberação é de uso único e expira sozinha: se ninguém acionar dentro da j
 depois. O trinco deve travar sozinho ao fechar, para a proteção não depender de alguém lembrar de
 trancar.
 
+### Controlador: iDFace (Control iD) em modo push
+
+O leitor facial **iDFace** faz o papel do controlador: no modo push é ele quem consulta o servidor,
+sem IP fixo e sem porta aberta, e a fechadura (eletroímã, duas em paralelo) fica no relé do módulo de
+acionamento externo. Não há firmware nosso.
+
+```text
+GET  /push?deviceId=<id>&uuid=<uuid>   → vazio (nada a fazer) ou o comando de abertura
+POST /result?deviceId=<id>&uuid=<uuid> → o aparelho informa o que executou
+```
+
+No aparelho, em `push_server`: `push_remote_address` = `evcore.com.br:80` (formato `host:porta`, sem
+protocolo) e `push_request_period` = 3 segundos. O cadastro da estação ganha o campo **ID do iDFace**,
+que liga o aparelho à fila da estação; aparelho não cadastrado cai no portão padrão.
+
+O comando é a ação `sec_box` — a do iDFace, que abre pelo módulo externo, e não `door`, das famílias
+com relé no terminal. O id do módulo e o motivo seguem a documentação (`65793` e `3`) e se trocam por
+`PORTAO_SECBOX_ID` e `PORTAO_SECBOX_REASON`. Se o aparelho recusar o corpo como objeto, a documentação
+é ambígua (descreve string, exemplifica com objeto): `PORTAO_PUSH_BODY_TEXTO=true` manda como texto.
+O motivo de qualquer recusa fica em `observacao` da liberação, no histórico.
+
+**Sem autenticação, por decisão.** O push não prevê token nem HTTPS — só `IP:porta` —, então estas
+duas rotas não exigem credencial e o aparelho se identifica pelo `deviceId`. O custo conhecido: quem
+souber esse número consegue consumir uma liberação pendente (sabotagem; a abertura é feita pelo
+aparelho, não por quem consulta). E, sendo HTTP puro, quem estiver no caminho entre o posto e a
+internet poderia forjar a resposta. A intenção da grade é dificultar o acesso aos cabos, não resistir
+a ataque dirigido.
+
+**Pendente de teste no aparelho:** se o Railway aceita a porta 80 sem redirecionar para HTTPS (o
+aparelho provavelmente não segue redirecionamento), e se `65793` é de fato o id do módulo.
+
+Especificações que importam, do datasheet: IP65, operação de **−20 °C a 40 °C** (mantenha à sombra),
+fonte de 12 V / 2 A, **1 relé** no módulo (até 30 VAC / 5 A) e **1 entrada de sensor de porta** — com
+duas portas, o sensor do iDFace enxerga só uma delas.
+
 ## Backup
 
 O backup automático roda a cada `BACKUP_INTERVAL_HOURS` (padrão 6) e grava em

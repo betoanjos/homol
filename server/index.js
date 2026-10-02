@@ -18,7 +18,8 @@ import { initEstadoDB, lerEstado, lerEstadoData, salvarEstado, listarHistorico, 
 import { enviarBackup, backupRemotoConfigurado, s3Config } from './backupRemoto.js';
 import { initRecargasDB, listarRecargas, salvarRecargas, excluirRecargas, contarRecargas, migrarRecargasDoEstado, listarVinculosRecargas } from './recargas.js';
 import { initFaturasDB, listarFaturas, salvarFaturas, excluirFaturas, contarFaturas, migrarFaturasDoEstado, marcarFaturaPaga } from './faturas.js';
-import { initPortaoDB, portaoConfig, portaoConfigurado, segredoConfere, registrarLiberacao, consumirPendente, listarEventos, aberturasNaUltimaHora, tokenDaEstacao, midiaJaUsada } from './portao.js';
+import { initPortaoDB, portaoConfig, portaoConfigurado, segredoConfere, registrarLiberacao, consumirPendente, listarEventos, aberturasNaUltimaHora, tokenDaEstacao, midiaJaUsada, registrarResultadoAparelho } from './portao.js';
+import { normalizarDeviceId, estacaoDoAparelho, montarComandoAbertura, lerResultado } from './portaoPush.js';
 import { montarCsvClientes, contarRecargasPorCliente, ufPorCliente } from './clientesCsv.js';
 import { lerMensagemRecebida, mensagemPedeAbertura, mascararTelefone, midiaPareceUrl, resolverEstacaoDaMensagem } from './portaoMensagem.js';
 
@@ -281,7 +282,11 @@ async function requireAuth(req, res, next) {
         || req.path.startsWith('/api/webhooks/mercadopago')
         || req.path.startsWith('/api/webhooks/zapsign')
         || req.path === '/api/portao/whatsapp'
-        || req.path === '/api/portao/pendente') return next();
+        || req.path === '/api/portao/pendente'
+        // O iDFace em modo push chama /push e /result na raiz — o caminho é
+        // fixo no aparelho e não dá para prefixá-lo — e não envia token.
+        || req.path === '/push'
+        || req.path === '/result') return next();
     const user = await getSessionUser(req);
     if (user) {
       req.user = user;
@@ -874,6 +879,72 @@ app.get('/api/portao/pendente', async (req, res) => {
     console.error('Erro ao consultar liberação da grade:', err);
     res.status(500).json({ abrir: false });
   }
+});
+
+// ── iDFace em modo push ─────────────────────────────────────────────────────
+// O leitor facial da Control iD consulta GET /push a cada poucos segundos. Sem
+// liberação pendente a resposta é VAZIA; com liberação, é o comando de abertura
+// do módulo de acionamento. Ver server/portaoPush.js para o protocolo.
+//
+// Por decisão do Roberto não há autenticação: o push não prevê token e a
+// intenção é só dificultar o acesso aos cabos, não resistir a ataque dirigido.
+// O custo conhecido: quem souber o deviceId consegue consumir uma liberação
+// pendente (sabotagem — a abertura é feita pelo aparelho, não por quem consulta).
+
+// Estação dona do aparelho, pelo idfaceId do cadastro. Aparelho desconhecido
+// cai no portão padrão (fila sem estação), como o controlador original.
+async function estacaoDoIdFace(deviceId) {
+  const estacoes = (await lerEstadoData())?.estacoes || [];
+  return estacaoDoAparelho(estacoes, deviceId);
+}
+
+app.get('/push', async (req, res) => {
+  try {
+    const deviceId = normalizarDeviceId(req.query.deviceId);
+    if (!deviceId) return res.status(400).end();
+
+    const estacao = await estacaoDoIdFace(deviceId);
+    const pendente = await consumirPendente(estacao?.id || null);
+
+    // Nada a fazer: resposta vazia, que é o que o protocolo espera. Não loga —
+    // são milhares de consultas por dia e nenhuma delas é informação.
+    if (!pendente) return res.status(200).end();
+
+    const cfg = portaoConfig();
+    console.log('Portão: comando entregue ao iDFace.', {
+      id: pendente.id, telefone: pendente.telefone_mascarado,
+      estacao: pendente.estacao_nome || '(portão padrão)', deviceId
+    });
+    res.json(montarComandoAbertura({
+      secboxId: cfg.secboxId, reason: cfg.secboxReason, bodyComoTexto: cfg.pushBodyComoTexto
+    }));
+  } catch (err) {
+    console.error('Erro no push do iDFace:', err);
+    // Vazio e não 500: o aparelho tenta de novo no próximo ciclo, e uma
+    // resposta de erro poderia ser interpretada por ele como comando.
+    res.status(200).end();
+  }
+});
+
+// O aparelho devolve aqui o resultado do que executou. É o que separa "recebeu
+// a ordem" de "executou a ordem" — e o motivo, quando o módulo recusa.
+app.post('/result', async (req, res) => {
+  try {
+    const deviceId = normalizarDeviceId(req.query.deviceId);
+    const resultado = lerResultado(req.body);
+    const estacao = deviceId ? await estacaoDoIdFace(deviceId) : null;
+
+    if (resultado.ok) {
+      console.log('Portão: iDFace executou o comando.', { deviceId, texto: resultado.texto });
+    } else {
+      console.warn('Portão: iDFace recusou o comando.', { deviceId, texto: resultado.texto });
+    }
+    if (deviceId) await registrarResultadoAparelho(estacao?.id || null, resultado.texto);
+  } catch (err) {
+    console.error('Erro ao registrar o resultado do iDFace:', err);
+  }
+  // O aparelho só precisa saber que recebemos; depois disso faz novo /push.
+  res.status(200).end();
 });
 
 // Reúne o que a segmentação precisa: a base, quantas recargas cada cliente

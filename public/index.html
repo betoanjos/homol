@@ -1675,6 +1675,15 @@
         <input type="text" id="est-palavraLiberacao" placeholder="liberar acesso estação Mafra">
       </div>
       <div class="form-group full">
+        <label>ID do iDFace (modo push) <span style="color:var(--text3);font-weight:400">— leitor facial que abre a grade</span>
+          <span style="font-weight:400;color:var(--text3);font-size:11px;display:block;margin-top:2px">
+            Número de série/deviceId do aparelho, o mesmo que ele envia ao consultar o servidor.
+            É por ele que as liberações desta estação chegam ao leitor certo. Só dígitos.
+          </span>
+        </label>
+        <input type="text" id="est-idfaceId" placeholder="Ex: 1234567" inputmode="numeric" style="font-family:'DM Mono',monospace">
+      </div>
+      <div class="form-group full">
         <label>Vigência deste vínculo <span style="color:var(--text3);font-weight:400">— preencha só se o equipamento mudou de local/parceiro</span>
           <span style="font-weight:400;color:var(--text3);font-size:11px;display:block;margin-top:2px">
             Quando o mesmo equipamento (mesmo ID Tupi) troca de ponto, cadastre-o duas vezes e

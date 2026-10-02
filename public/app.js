@@ -5274,6 +5274,7 @@ function openModalEstacao(id = null) {
   set('investimento',    e?.investimento || '');
   set('dataInauguracao', e?.dataInauguracao || '');
   set('palavraLiberacao', e?.palavraLiberacao || '');
+  set('idfaceId',         e?.idfaceId || '');
   set('vigenciaInicio',  e?.vigenciaInicio || '');
   set('vigenciaFim',     e?.vigenciaFim || '');
   // Popular select de parceiros
@@ -5383,6 +5384,7 @@ function salvarEstacao() {
     dataInauguracao:  get('dataInauguracao') || '',
     documentos:       [...estacaoDocsBuffer],
     palavraLiberacao: get('palavraLiberacao') || '',
+    idfaceId:         get('idfaceId').replace(/\D/g, ''),
     vigenciaInicio:   get('vigenciaInicio') || '',
     vigenciaFim:      get('vigenciaFim') || '',
     criadoEm:         editingEstacaoId ? estacoes.find(x=>x.id===editingEstacaoId)?.criadoEm : new Date().toISOString(),
